@@ -8,11 +8,33 @@
  * - 同期 Speech v2 の上限が約 9MB のため、lowestaudio (≒48kbps webm/opus) を選ぶ。
  *   10〜15 分の動画ならおおよそ 4〜6MB に収まる。
  * - Google Speech v2 は autoDecodingConfig で WEBM_OPUS を受け付ける。
+ * - bot 判定回避のため、環境変数 YOUTUBE_COOKIES_JSON に
+ *   ログイン済み Cookie の JSON 配列を入れておくと自動で渡される。
  */
 
 import ytdl from "@distube/ytdl-core";
 
 const MAX_DURATION_SEC = 20 * 60; // 安全側で 20 分まで
+
+let cachedAgent: ReturnType<typeof ytdl.createAgent> | undefined;
+
+function getAgent(): ReturnType<typeof ytdl.createAgent> | undefined {
+  if (cachedAgent) return cachedAgent;
+  const raw = process.env.YOUTUBE_COOKIES_JSON;
+  if (!raw) return undefined;
+  try {
+    const text = raw.trim().startsWith("[")
+      ? raw
+      : Buffer.from(raw, "base64").toString("utf-8");
+    const cookies = JSON.parse(text);
+    if (!Array.isArray(cookies)) return undefined;
+    cachedAgent = ytdl.createAgent(cookies);
+    return cachedAgent;
+  } catch (e) {
+    console.warn("[youtube] failed to parse YOUTUBE_COOKIES_JSON:", e);
+    return undefined;
+  }
+}
 
 export type YouTubeAudio = {
   audio: Buffer;
@@ -42,7 +64,8 @@ export async function downloadYouTubeAudio(url: string): Promise<YouTubeAudio> {
     throw new Error("YouTube の URL ではないようです");
   }
 
-  const info = await ytdl.getInfo(url);
+  const agent = getAgent();
+  const info = await ytdl.getInfo(url, agent ? { agent } : undefined);
   const durationSec = parseInt(info.videoDetails.lengthSeconds || "0", 10);
 
   if (durationSec > 0 && durationSec > MAX_DURATION_SEC) {
@@ -56,6 +79,7 @@ export async function downloadYouTubeAudio(url: string): Promise<YouTubeAudio> {
   const stream = ytdl.downloadFromInfo(info, {
     quality: "lowestaudio",
     filter: "audioonly",
+    ...(agent ? { agent } : {}),
   });
 
   const chunks: Buffer[] = [];
