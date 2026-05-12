@@ -63,7 +63,7 @@ const STEP_LABEL: Record<Step, string> = {
   review: "字幕の確認・編集・ダウンロード",
 };
 
-const MAX_DURATION_SEC = 8 * 60;
+const MAX_DURATION_SEC = 15 * 60;
 
 function fmtTime(sec: number): string {
   const m = Math.floor(sec / 60);
