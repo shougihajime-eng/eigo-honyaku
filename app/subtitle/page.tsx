@@ -328,12 +328,12 @@ export default function SubtitlePage() {
         <span className="chip">動画字幕</span>
       </header>
 
-      <div className="animate-fade-in flex flex-col gap-1.5">
-        <h1 className="text-2xl font-semibold tracking-tight text-white sm:text-3xl">
+      <div className="animate-fade-in flex flex-col gap-2">
+        <h1 className="text-3xl font-semibold tracking-tight text-white sm:text-4xl">
           動画字幕をつくる
         </h1>
-        <p className="text-sm text-zinc-400">
-          MP4 を選ぶだけ。書き起こし → 英訳 → SRT・テロップJSON まで自動で。
+        <p className="text-base text-zinc-300 sm:text-lg">
+          MP4 を選ぶか YouTube URL を貼るだけ。書き起こし → 英訳 → 字幕ファイルまで自動で。
         </p>
       </div>
 
@@ -517,10 +517,10 @@ function InputSection(props: {
           const f = e.dataTransfer.files?.[0];
           if (f) handlePickFile(f);
         }}
-        className={`flex cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed p-8 text-center transition sm:p-12 ${
+        className={`flex cursor-pointer flex-col items-center justify-center gap-4 rounded-3xl border-2 border-dashed p-10 text-center transition sm:p-14 ${
           dragOver
-            ? "border-violet-400/60 bg-violet-500/[0.06]"
-            : "border-white/10 bg-white/[0.02] hover:border-white/20 hover:bg-white/[0.04]"
+            ? "border-violet-400/60 bg-violet-500/[0.08] shadow-[0_20px_60px_-20px_rgba(139,92,246,0.4)]"
+            : "border-white/15 bg-white/[0.02] hover:border-white/25 hover:bg-white/[0.04]"
         }`}
       >
         <svg
@@ -529,7 +529,7 @@ function InputSection(props: {
           viewBox="0 0 24 24"
           strokeWidth={1.5}
           stroke="currentColor"
-          className="h-10 w-10 text-zinc-500 sm:h-12 sm:w-12"
+          className="h-12 w-12 text-zinc-400 sm:h-14 sm:w-14"
         >
           <path
             strokeLinecap="round"
@@ -537,10 +537,10 @@ function InputSection(props: {
             d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"
           />
         </svg>
-        <div className="break-all text-base font-semibold text-white">
-          {file ? file.name : "MP4 をドラッグ、またはタップして選択"}
+        <div className="break-all text-lg font-semibold text-white sm:text-xl">
+          {file ? file.name : "動画ファイルをドラッグ、またはタップして選択"}
         </div>
-        <div className="text-xs text-zinc-500">
+        <div className="text-sm text-zinc-400">
           {file
             ? `${fmtBytes(file.size)} / ${fmtTime(duration)}`
             : `${Math.floor(maxDurationSec / 60)}分以下の MP4`}
@@ -553,10 +553,10 @@ function InputSection(props: {
         />
       </label>
 
-      <div className="flex items-center gap-3 text-[11px] text-zinc-500">
-        <span className="h-px flex-1 bg-white/[0.06]" />
+      <div className="flex items-center gap-3 text-sm text-zinc-400">
+        <span className="h-px flex-1 bg-white/[0.08]" />
         または
-        <span className="h-px flex-1 bg-white/[0.06]" />
+        <span className="h-px flex-1 bg-white/[0.08]" />
       </div>
 
       <input
@@ -567,18 +567,18 @@ function InputSection(props: {
         value={youtubeUrl}
         onChange={(e) => handleUrlChange(e.target.value)}
         placeholder="YouTube の URL を貼り付け"
-        className="w-full rounded-xl border border-white/10 bg-white/[0.02] px-4 py-3 text-sm text-zinc-100 outline-none transition focus:border-violet-500/40 focus:bg-white/[0.04]"
+        className="w-full rounded-2xl border border-white/10 bg-white/[0.02] px-5 py-4 text-base text-zinc-100 outline-none transition focus:border-violet-500/50 focus:bg-white/[0.04]"
       />
 
-      <p className="text-xs text-zinc-500">
+      <p className="text-sm text-zinc-400">
         ※ 今のバージョンは {Math.floor(maxDurationSec / 60)}分以下の動画のみ対応。
       </p>
 
-      <div className="flex flex-col gap-2 sm:flex-row">
+      <div className="flex flex-col gap-3 sm:flex-row">
         <button
           onClick={onStart}
           disabled={!canStart}
-          className="btn-primary flex-1 inline-flex items-center justify-center gap-2 disabled:cursor-not-allowed disabled:opacity-40"
+          className="btn-primary flex-1 inline-flex items-center justify-center gap-2 text-base sm:text-lg"
         >
           字幕を作る <Arrow />
         </button>
@@ -589,7 +589,7 @@ function InputSection(props: {
         )}
       </div>
       {!canStart && (
-        <p className="text-center text-[11px] text-zinc-500">
+        <p className="text-center text-sm text-zinc-500">
           ファイルを選ぶか、YouTube の URL を入れてください
         </p>
       )}

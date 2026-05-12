@@ -128,13 +128,18 @@ function CountdownNumber({
   containerWidth: number;
 }) {
   const color = countdownColor(value);
-  const size = Math.max(36, Math.round(containerWidth * 0.16));
-  const pad = Math.max(8, Math.round(containerWidth * 0.02));
+  // 残り少ないほど少し大きく見せる（緊張感）
+  const baseScale = value <= 2 ? 0.20 : value <= 5 ? 0.18 : 0.16;
+  const size = Math.max(48, Math.round(containerWidth * baseScale));
+  const pad = Math.max(10, Math.round(containerWidth * 0.025));
+  const urgent = value <= 3;
+
   const wrap: CSSProperties = {
     position: "absolute",
     top: pad,
     right: pad,
     pointerEvents: "none",
+    animation: urgent ? "countdown-pulse 0.9s ease-in-out infinite" : undefined,
   };
   const numStyle: CSSProperties = {
     fontSize: size,
@@ -143,8 +148,9 @@ function CountdownNumber({
     lineHeight: 1,
     fontFamily:
       '"Inter", "Helvetica Neue", Arial, "Hiragino Kaku Gothic ProN", sans-serif',
-    textShadow: outlineShadow("#000000", Math.max(2, Math.round(size * 0.05))),
+    textShadow: outlineShadow("#000000", Math.max(2, Math.round(size * 0.06))),
     letterSpacing: "-0.04em",
+    filter: `drop-shadow(0 0 ${Math.round(size * 0.12)}px ${color}66)`,
   };
   return (
     <div style={wrap}>

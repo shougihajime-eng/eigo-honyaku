@@ -2,50 +2,50 @@ import Link from "next/link";
 
 export default function Home() {
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col px-6 py-10 sm:py-16">
+    <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col px-5 py-8 sm:px-6 sm:py-16">
       <Header />
 
-      <section className="mt-16 flex flex-col items-start gap-5 sm:mt-24">
+      <section className="mt-14 flex flex-col items-start gap-6 sm:mt-24">
         <span className="chip chip-accent animate-fade">
           <span className="h-1.5 w-1.5 rounded-full bg-violet-400" />
-          For shogi creators
+          将棋クリエイター向け
         </span>
-        <h1 className="animate-fade-in text-4xl font-semibold leading-[1.05] tracking-tight text-white sm:text-6xl">
+        <h1 className="animate-fade-in text-[2.5rem] font-semibold leading-[1.05] tracking-tight text-white sm:text-7xl">
           将棋を、
           <br className="sm:hidden" />
           <span className="bg-gradient-to-r from-violet-300 via-fuchsia-200 to-cyan-200 bg-clip-text text-transparent">
             世界へ届ける
           </span>
         </h1>
-        <p className="max-w-2xl text-base leading-relaxed text-zinc-400 sm:text-lg">
+        <p className="max-w-2xl text-lg leading-relaxed text-zinc-300 sm:text-xl">
           AIが、あなたの日本語動画を
-          <span className="text-zinc-200"> 海外視聴者に伝わる英語字幕</span>
+          <span className="text-white"> 海外視聴者に伝わる英語字幕</span>
           に変えます。
           書き起こし・翻訳・テロップまで、ひとつの画面で。
         </p>
       </section>
 
-      <section className="mt-12 grid animate-fade-in grid-cols-1 gap-4 sm:mt-16 sm:grid-cols-2 sm:gap-5">
+      <section className="mt-10 grid animate-fade-in grid-cols-1 gap-4 sm:mt-16 sm:grid-cols-2 sm:gap-6">
         <FeatureCard
-          href="/video"
-          eyebrow="MAIN"
+          href="/subtitle"
+          eyebrow="メイン"
           title="動画字幕を作る"
-          description="YouTube URL を貼るだけで、書き起こし → 翻訳 → テロップ調整 → 焼き付け動画まで。"
-          accentDots="from-violet-500/40 via-fuchsia-500/30 to-transparent"
+          description="MP4 ファイルか YouTube URL を入れるだけ。書き起こし → 翻訳 → テロップ調整まで一気通貫。"
+          accentDots="from-violet-500/50 via-fuchsia-500/30 to-transparent"
         />
         <FeatureCard
           href="/quick"
-          eyebrow="QUICK"
+          eyebrow="クイック"
           title="テキストを即英訳"
           description="タイトル・サムネ・概要欄・コメント返信を、将棋専門辞書つきの英訳で一瞬。"
-          accentDots="from-cyan-500/40 via-sky-500/30 to-transparent"
+          accentDots="from-cyan-500/50 via-sky-500/30 to-transparent"
         />
       </section>
 
-      <section className="mt-12 grid grid-cols-1 gap-3 sm:mt-16 sm:grid-cols-3 sm:gap-4">
+      <section className="mt-10 grid grid-cols-1 gap-3 sm:mt-16 sm:grid-cols-3 sm:gap-4">
         <Stat label="将棋専門辞書" value="100+" sub="駒・戦法・囲い・棋戦名" />
         <Stat label="AI モデル" value="Claude Sonnet 4.6" sub="二段チェックで品質担保" />
-        <Stat label="対応端末" value="All" sub="PC / iPad / iPhone / Android" />
+        <Stat label="対応端末" value="すべて" sub="PC / iPad / iPhone / Android" />
       </section>
 
       <Footer />
@@ -94,22 +94,22 @@ function FeatureCard({
   return (
     <Link
       href={href}
-      className="group relative overflow-hidden rounded-2xl border border-white/[0.06] bg-zinc-900/40 p-6 backdrop-blur transition-all duration-300 hover:-translate-y-0.5 hover:border-white/[0.12] hover:bg-zinc-900/70 sm:p-8"
+      className="group relative overflow-hidden rounded-3xl border border-white/[0.08] bg-zinc-900/40 p-7 backdrop-blur-xl transition-all duration-300 hover:-translate-y-1 hover:border-white/[0.18] hover:bg-zinc-900/70 hover:shadow-[0_24px_48px_-16px_rgba(139,92,246,0.35)] sm:p-9 min-h-[180px] sm:min-h-[220px]"
     >
       <div
         className={`pointer-events-none absolute -top-32 right-0 h-72 w-72 rounded-full bg-gradient-to-b ${accentDots} opacity-60 blur-3xl transition-opacity duration-500 group-hover:opacity-100`}
       />
       <div className="relative flex flex-col gap-3">
-        <span className="text-[10px] font-medium uppercase tracking-[0.18em] text-zinc-500">
+        <span className="text-[11px] font-medium uppercase tracking-[0.22em] text-zinc-400">
           {eyebrow}
         </span>
-        <h2 className="text-2xl font-semibold tracking-tight text-white sm:text-3xl">
+        <h2 className="text-2xl font-semibold tracking-tight text-white sm:text-[2rem]">
           {title}
         </h2>
-        <p className="text-sm leading-relaxed text-zinc-400 sm:text-base">
+        <p className="text-base leading-relaxed text-zinc-300 sm:text-lg">
           {description}
         </p>
-        <div className="mt-4 inline-flex items-center gap-1.5 text-sm font-medium text-zinc-300 transition-transform duration-300 group-hover:translate-x-1">
+        <div className="mt-4 inline-flex items-center gap-1.5 text-base font-medium text-white transition-transform duration-300 group-hover:translate-x-1.5">
           始める
           <Arrow />
         </div>
@@ -135,14 +135,14 @@ function Arrow() {
 
 function Stat({ label, value, sub }: { label: string; value: string; sub: string }) {
   return (
-    <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-4 sm:p-5">
-      <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-zinc-500">
+    <div className="rounded-2xl border border-white/[0.08] bg-white/[0.02] p-5 backdrop-blur-md sm:p-6">
+      <div className="text-[11px] font-medium uppercase tracking-[0.18em] text-zinc-400">
         {label}
       </div>
-      <div className="mt-1.5 text-xl font-semibold tracking-tight text-white sm:text-2xl">
+      <div className="mt-2 text-2xl font-semibold tracking-tight text-white sm:text-3xl">
         {value}
       </div>
-      <div className="mt-0.5 text-xs text-zinc-500">{sub}</div>
+      <div className="mt-1 text-sm text-zinc-400">{sub}</div>
     </div>
   );
 }

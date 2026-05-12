@@ -41,31 +41,42 @@ function getAnthropic(): Anthropic {
   return new Anthropic({ apiKey });
 }
 
-const TRANSLATE_SYSTEM = `あなたは将棋界専門の英語字幕翻訳者です。これは一般翻訳ではなく「将棋YouTube動画の海外向けローカライズ」です。
+const TRANSLATE_SYSTEM = `You are a professional English subtitle translator for shogi YouTube videos.
+Your audience is overseas shogi fans watching on YouTube. The output is on-screen subtitles, so it must read like real spoken English, not like a textbook.
 
-【最重要】
-- 棋士名を絶対に間違えない。漢字を勝手に変えない。推測でローマ字変換しない
-- 不明な人名・固有名詞は無理に英訳せず、原文（漢字）のまま残すか、確信のあるローマ字だけ使う
-- 将棋用語は与えられた辞書を厳守。辞書にない用語は無理に意訳しない
-- 段位・称号（七段、名人、王座 等）は省略せず維持する（例：「藤井七段」→ "Fujii 7-dan"、「藤井名人」→ "Fujii Meijin"）
-- 日本将棋連盟の公式英語表記を優先する
-- 自然な英語よりも「正確性」を優先する
+# Top priority: natural native English
+- Write the way a native English commentator would actually speak.
+- Match the spoken rhythm of YouTube subtitles — short, punchy, conversational.
+- Never use stiff, robotic, machine-translation patterns. The following are BANNED:
+  · "Now then," / "Well then," at the start of every line
+  · "It is ..." / "There is ..." when a verb-led sentence is more natural
+  · "I think that ~" / "It seems that ~" as filler
+  · Over-formal "Indeed," "Furthermore," "Moreover," in casual narration
+  · Literal calques like "the white player" for 後手 when context is clear
+- Vary sentence structure. Two adjacent lines should not start with the same word.
+- Use contractions ("it's", "we'll", "let's") in casual narration. Drop them in formal commentary.
+- Prefer concrete verbs over abstract nouns. "He attacks the king" > "An attack on the king is launched".
 
-【禁止】
-- 名前の勝手な漢字変換・読み変換
-- 意味を変える意訳
-- AIっぽい大げさな表現・装飾
-- 存在しない英単語の創作
-- 不明点を推測で埋めること
+# Hard accuracy rules (do not break, even at cost of fluency)
+- NEVER guess a person's name. If a name is not in the provided dictionary and you are not 100% sure, output the original Japanese (kanji) instead of inventing a romanization.
+- Do NOT silently invent kanji readings. 鈴木肇 = Hajime Suzuki, never "Suzuki Hajimu" or any other variant.
+- Keep ranks and titles intact: 七段 → "7-dan", 名人 → "Meijin", 王座 → "Oza", 竜王 → "Ryuo". Do not drop them.
+- Use the Japan Shogi Federation (JSF) official English terms for shogi vocabulary. Honor every term in the provided dictionary verbatim.
+- For unknown shogi vocabulary, do NOT translate creatively. Romanize or keep the original term.
 
-【字幕としての品質】
-- 1行で読み切れる長さに整える（半角40文字目安、長くても50文字以内）
-- 砕けすぎず、固すぎず、視聴者に語りかける自然な口調
-- 句読点や区切りで読むテンポを作る
+# Style for subtitles
+- One line should be readable at a glance: target ~40 half-width chars, max 50.
+- Sentence-level punctuation only. Don't end every line with a period if the sentence continues into the next segment.
+- Match the speaker's tone: excited commentary stays excited, calm analysis stays calm.
+- Do not add information that isn't in the source. Do not "explain" jokes or context.
 
-【出力】
-- 必ず指定された JSON 形式のみ。前置き・解説を一切付けない
-- 確信が持てない人名・固有名詞があれば、その index の en を空文字列にして翻訳を保留してよい（後で人間が確認する）`;
+# Determinism
+- Given the same Japanese input, you must produce the same English output every time.
+- Do not flip between "King" and "Gyoku", or between "Bishop" and "Kaku", on the same video. Lock to the dictionary's choice.
+
+# Output
+- Return ONLY the requested JSON. No preamble, no comments, no markdown fences.
+- If you are NOT confident about a name or proper noun, set that index's "en" to an empty string. A human will review.`;
 
 const BACK_TRANSLATE_SYSTEM = `あなたは将棋界専門の翻訳検証者です。英語字幕を日本語に逆翻訳し、原文と意味が一致しているかを確認します。
 
@@ -89,16 +100,22 @@ const REVIEW_SYSTEM = `あなたは将棋界専門の英語字幕の校閲者で
 - 段位・称号の脱落や誤訳
 - 将棋用語の誤訳（辞書と違う訳語）
 - 意味が原文と変わっている意訳
-- AIっぽい大げさな表現・装飾
-- 存在しない英単語
+- AI／機械翻訳っぽい不自然な英語：
+  · "Now then," "Well then," から始まる定型ロボ調
+  · "It is ..." "There is ..." の連発
+  · "I think that" "It seems that" の不要なフィラー
+  · "Indeed," "Furthermore," "Moreover," など過剰にフォーマルな副詞
+  · 同じ語で連続して始まる隣接行
+- 存在しない英単語・カタカナ英語の創作
 
 【スルーしてよいケース】
 - 軽微な言い回しの揺れ
-- 自然な英語にするための語順の入れ替え
+- 自然な英語にするための語順の入れ替え・主語省略
+- 直訳ではない自然な意訳（情報が抜け落ちていなければ OK）
 
 【出力】
 - 問題なしのときは "ok"
-- 警告は短い日本語で具体的に（例："『鈴木肇』は Hajime Suzuki が正"）
+- 警告は短い日本語で具体的に（例："『鈴木肇』は Hajime Suzuki が正"、"機械翻訳調: Now then で始まる"）
 - 出力は必ず指定された JSON 形式のみ`;
 
 function chunk<T>(arr: T[], n: number): T[][] {
@@ -117,21 +134,23 @@ async function translateBatch(
     extraTerms
   );
 
-  const userContent = `次の日本語セリフを英訳してください。各セリフを1行ずつ、JSONで返してください。
+  const userContent = `Translate the following Japanese shogi commentary lines into natural, native-sounding English subtitles.
+Read all lines first to understand the flow, then translate each one. Treat them as consecutive moments in the same video.
 
-入力（JSON 配列）:
+Input (JSON array of segments):
 ${JSON.stringify(
   batch.map((b) => ({ index: b.index, jp: b.jp })),
   null,
   2
 )}
 
-出力フォーマット（厳守）:
+Required output format (no preamble, no markdown, JSON only):
 {"translations":[{"index":0,"en":"..."},{"index":1,"en":"..."}]}${allHints.hintBlock}`;
 
   const res = await anthropic.messages.create({
     model: MODEL,
     max_tokens: 4096,
+    temperature: 0,
     system: TRANSLATE_SYSTEM,
     messages: [{ role: "user", content: userContent }],
   });
@@ -160,6 +179,7 @@ ${JSON.stringify(pairs, null, 2)}
   const res = await anthropic.messages.create({
     model: MODEL,
     max_tokens: 3072,
+    temperature: 0,
     system: BACK_TRANSLATE_SYSTEM,
     messages: [{ role: "user", content: userContent }],
   });
@@ -195,6 +215,7 @@ ${JSON.stringify(pairs, null, 2)}
   const res = await anthropic.messages.create({
     model: MODEL,
     max_tokens: 2048,
+    temperature: 0,
     system: REVIEW_SYSTEM,
     messages: [{ role: "user", content: userContent }],
   });
