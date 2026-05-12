@@ -108,9 +108,18 @@ export default function SubtitlePage() {
       return;
     }
     try {
-      const dur = await readVideoDuration(picked);
+      let dur = 0;
+      try {
+        dur = await readVideoDuration(picked);
+      } catch {
+        // 一部の端末（iPhone Safari等）では duration を取れないことがある。
+        // 取れない場合は 0 のまま進め、音声抽出後にファイルサイズで判定する。
+        dur = 0;
+      }
+      // Infinity / NaN も取れなかったとみなす
+      if (!Number.isFinite(dur) || dur <= 0) dur = 0;
       setDuration(dur);
-      if (dur > MAX_DURATION_SEC) {
+      if (dur > 0 && dur > MAX_DURATION_SEC) {
         setError(
           `この MVP では ${Math.floor(MAX_DURATION_SEC / 60)} 分以下の動画のみ対応しています（選んだ動画: ${fmtTime(
             dur
@@ -486,7 +495,7 @@ function InputSection(props: {
         <button
           onClick={props.onStart}
           disabled={!file}
-          className="btn-primary flex-1 inline-flex items-center justify-center gap-2"
+          className="btn-primary flex-1 inline-flex items-center justify-center gap-2 disabled:cursor-not-allowed disabled:opacity-40"
         >
           字幕を作る <Arrow />
         </button>
@@ -496,6 +505,11 @@ function InputSection(props: {
           </button>
         )}
       </div>
+      {!file && (
+        <p className="text-center text-[11px] text-zinc-500">
+          先に上の枠で動画ファイルを選んでください
+        </p>
+      )}
     </div>
   );
 }
