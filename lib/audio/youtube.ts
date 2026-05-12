@@ -92,9 +92,19 @@ export async function downloadYouTubeAudio(url: string): Promise<YouTubeAudio> {
     );
   }
 
+  // audio-only を優先、無ければ audio+video から最小サイズを選ぶ
+  const audioOnly = info.formats.filter((f) => f.hasAudio && !f.hasVideo);
+  const usableFormats = audioOnly.length > 0
+    ? audioOnly
+    : info.formats.filter((f) => f.hasAudio);
+  if (usableFormats.length === 0) {
+    throw new Error(
+      `音声フォーマットが見つかりませんでした（formats=${info.formats.length}）。動画にアクセスできない可能性があります。`
+    );
+  }
+  const chosen = ytdl.chooseFormat(usableFormats, { quality: "lowestaudio" });
   const stream = ytdl.downloadFromInfo(info, {
-    quality: "lowestaudio",
-    filter: "audioonly",
+    format: chosen,
     playerClients: PLAYER_CLIENTS,
     ...(agent ? { agent } : {}),
   });
