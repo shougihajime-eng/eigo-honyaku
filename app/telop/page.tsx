@@ -16,9 +16,7 @@ const SAMPLE_SEGMENTS: TelopSegment[] = [
     endSec: 3.4,
     jp: "今日は居飛車穴熊の仕掛けをご紹介します。",
     en: "Today I'll show you a Static Rook Anaguma attack.",
-    hitTerms: [
-      { jp: "居飛車穴熊", en: "Static Rook Anaguma" },
-    ],
+    hitTerms: [{ jp: "居飛車穴熊", en: "Static Rook Anaguma" }],
   },
   {
     index: 1,
@@ -37,9 +35,7 @@ const SAMPLE_SEGMENTS: TelopSegment[] = [
     endSec: 9.8,
     jp: "ここで王手飛車取りが見えますね。",
     en: "Here you can see a fork on the king and rook.",
-    hitTerms: [
-      { jp: "王手飛車取り", en: "Fork king and rook" },
-    ],
+    hitTerms: [{ jp: "王手飛車取り", en: "Fork king and rook" }],
   },
   {
     index: 3,
@@ -181,36 +177,35 @@ export default function TelopPage() {
   }
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-6xl flex-col gap-5 px-4 py-5 sm:py-8">
+    <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-5 px-4 py-6 sm:px-6 sm:py-10">
       <header className="flex items-center justify-between">
-        <Link href="/" className="text-sm text-slate-500 hover:text-slate-900">
-          ← トップに戻る
+        <Link href="/" className="btn-ghost -ml-2 inline-flex items-center gap-1.5">
+          <Back /> Eigo
         </Link>
-        <span className="text-xs text-slate-500">テロップ調整</span>
+        <span className="chip">テロップ調整</span>
       </header>
 
-      <div>
-        <h1 className="text-xl font-bold sm:text-2xl">英語テロップを整える</h1>
-        <p className="text-sm text-slate-500">
+      <div className="animate-fade-in flex flex-col gap-1.5">
+        <h1 className="text-2xl font-semibold tracking-tight text-white sm:text-3xl">
+          英語テロップを整える
+        </h1>
+        <p className="text-sm text-zinc-400">
           見え方・色・大きさを調整して、SRT と「テロッププロジェクト」を書き出します。
         </p>
       </div>
 
       {/* 操作ヘッダー */}
-      <div className="flex flex-wrap gap-2 text-sm">
+      <div className="flex flex-wrap items-center gap-2 text-sm">
         <button
           onClick={() => setImportOpen((o) => !o)}
-          className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 hover:border-slate-400"
+          className="btn-secondary text-xs sm:text-sm"
         >
           字幕を読み込む
         </button>
-        <button
-          onClick={loadSample}
-          className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 hover:border-slate-400"
-        >
+        <button onClick={loadSample} className="btn-secondary text-xs sm:text-sm">
           サンプルに戻す
         </button>
-        <label className="cursor-pointer rounded-lg border border-slate-200 bg-white px-3 py-1.5 hover:border-slate-400">
+        <label className="btn-secondary cursor-pointer text-xs sm:text-sm">
           背景画像を変える
           <input
             ref={fileRef}
@@ -221,45 +216,37 @@ export default function TelopPage() {
           />
         </label>
         {bgUrl && (
-          <button
-            onClick={clearBackground}
-            className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-slate-600 hover:border-slate-400"
-          >
+          <button onClick={clearBackground} className="btn-ghost text-xs">
             背景を戻す
           </button>
         )}
-        <span className="ml-auto text-xs text-slate-500 self-center">
+        <span className="ml-auto inline-flex items-center gap-2 text-xs text-zinc-500">
           字幕 {segments.length} 件
-          {totalWarn > 0 && (
-            <span className="ml-2 inline-block rounded-full bg-amber-100 px-2 py-0.5 text-amber-800">
-              ⚠ 要確認 {totalWarn} 件
-            </span>
-          )}
+          {totalWarn > 0 && <span className="chip chip-warn">⚠ {totalWarn} 件</span>}
         </span>
       </div>
 
       {importOpen && (
-        <div className="flex flex-col gap-2 rounded-xl border border-slate-200 bg-white p-3 text-sm">
-          <p className="text-slate-600">
-            <code className="rounded bg-slate-100 px-1">/video</code> の確認画面で作った字幕を
-            JSON として貼り付けると読み込めます（テロッププロジェクトJSON、もしくは{" "}
-            <code className="rounded bg-slate-100 px-1">{"{\"segments\":[...]}"}</code> 形式）。
+        <div className="card animate-fade-in flex flex-col gap-2 p-4 text-sm">
+          <p className="text-zinc-400">
+            <code className="rounded bg-white/[0.06] px-1 text-zinc-200">/subtitle</code>{" "}
+            や <code className="rounded bg-white/[0.06] px-1 text-zinc-200">/video</code>{" "}
+            で作った字幕を JSON として貼り付けると読み込めます。
           </p>
           <textarea
             value={importText}
             onChange={(e) => setImportText(e.target.value)}
             rows={6}
             placeholder='{"segments":[{"index":0,"startSec":0,"endSec":3,"jp":"...","en":"...","hitTerms":[]}]}'
-            className="w-full resize-y rounded-lg border border-slate-200 p-2 font-mono text-xs"
+            className="field font-mono text-xs"
           />
           {importError && (
-            <div className="rounded border border-red-200 bg-red-50 p-2 text-xs text-red-700">{importError}</div>
+            <div className="rounded-lg border border-rose-500/30 bg-rose-500/[0.06] p-2 text-xs text-rose-200">
+              {importError}
+            </div>
           )}
           <div className="flex gap-2">
-            <button
-              onClick={tryImport}
-              className="rounded-lg bg-slate-900 px-3 py-1.5 text-sm font-semibold text-white"
-            >
+            <button onClick={tryImport} className="btn-primary text-sm">
               読み込む
             </button>
             <button
@@ -268,7 +255,7 @@ export default function TelopPage() {
                 setImportText("");
                 setImportError(null);
               }}
-              className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm"
+              className="btn-ghost text-sm"
             >
               閉じる
             </button>
@@ -277,7 +264,7 @@ export default function TelopPage() {
       )}
 
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-5">
-        {/* プレビュー＋セグメント選択 */}
+        {/* プレビュー */}
         <div className="flex flex-col gap-3 lg:col-span-3">
           <TelopPreviewFrame
             text={active?.en ?? ""}
@@ -289,14 +276,14 @@ export default function TelopPage() {
             <button
               onClick={() => setActiveIdx((i) => Math.max(0, i - 1))}
               disabled={activeIdx <= 0}
-              className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm hover:border-slate-400 disabled:opacity-40"
+              className="btn-secondary text-sm disabled:opacity-40"
             >
               ◀ 前
             </button>
             <select
               value={activeIdx}
               onChange={(e) => setActiveIdx(Number(e.target.value))}
-              className="flex-1 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm"
+              className="flex-1 text-sm"
             >
               {segments.map((s, i) => (
                 <option key={s.index} value={i}>
@@ -307,31 +294,35 @@ export default function TelopPage() {
             <button
               onClick={() => setActiveIdx((i) => Math.min(segments.length - 1, i + 1))}
               disabled={activeIdx >= segments.length - 1}
-              className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm hover:border-slate-400 disabled:opacity-40"
+              className="btn-secondary text-sm disabled:opacity-40"
             >
               次 ▶
             </button>
           </div>
 
           {active && (
-            <div className="rounded-xl border border-slate-200 bg-white p-3 text-sm">
-              <div className="flex items-center justify-between text-xs text-slate-500">
+            <div className="card p-4 text-sm">
+              <div className="flex items-center justify-between text-xs text-zinc-500">
                 <span>
-                  {fmtTime(active.startSec)} → {fmtTime(active.endSec)}（{(active.endSec - active.startSec).toFixed(2)}秒）
+                  {fmtTime(active.startSec)} → {fmtTime(active.endSec)}（
+                  {(active.endSec - active.startSec).toFixed(2)}秒）
                 </span>
                 <span>{active.en.length} 文字</span>
               </div>
-              <div className="mt-1 text-xs text-slate-500">日本語: {active.jp}</div>
+              <div className="mt-1.5 text-xs text-zinc-400">日本語: {active.jp}</div>
               <textarea
                 value={active.en}
                 onChange={(e) => updateActiveEn(e.target.value)}
                 rows={2}
-                className="mt-2 w-full resize-none rounded-lg border border-slate-200 p-2 text-sm"
+                className="field mt-2 text-sm"
               />
               {warningsForActive.length > 0 && (
-                <ul className="mt-2 flex flex-col gap-1 text-xs text-amber-800">
+                <ul className="mt-2 flex flex-col gap-1 text-xs text-amber-300/90">
                   {warningsForActive.map((w, i) => (
-                    <li key={i} className="rounded bg-amber-50 px-2 py-1">
+                    <li
+                      key={i}
+                      className="rounded-md border border-amber-500/20 bg-amber-500/[0.05] px-2 py-1"
+                    >
                       ⚠ {w.message}
                     </li>
                   ))}
@@ -341,22 +332,16 @@ export default function TelopPage() {
           )}
 
           <div className="flex flex-col gap-2 sm:flex-row">
-            <button
-              onClick={downloadSrt}
-              className="flex-1 rounded-xl bg-slate-900 px-4 py-3 text-base font-semibold text-white shadow-sm transition active:scale-[0.99]"
-            >
+            <button onClick={downloadSrt} className="btn-primary flex-1">
               SRT を書き出す（YouTube用）
             </button>
-            <button
-              onClick={downloadProject}
-              className="flex-1 rounded-xl border border-slate-300 bg-white px-4 py-3 text-base font-semibold text-slate-800 shadow-sm transition active:scale-[0.99] hover:border-slate-500"
-            >
-              テロップ プロジェクトJSON を書き出す
+            <button onClick={downloadProject} className="btn-secondary flex-1">
+              テロップ プロジェクトJSON
             </button>
           </div>
 
-          <p className="text-[11px] text-slate-500">
-            プロジェクトJSONには字幕＋見た目（フォント／色／位置／背景）が全部入ります。将来、動画への焼き付けに使います。
+          <p className="text-[11px] text-zinc-500">
+            プロジェクトJSONには字幕＋見た目（フォント／色／位置／背景）が全部入ります。
           </p>
         </div>
 
@@ -374,4 +359,19 @@ function fmtTime(sec: number): string {
   const s = Math.floor(sec % 60);
   const ms = Math.floor((sec - Math.floor(sec)) * 100);
   return `${m}:${s.toString().padStart(2, "0")}.${ms.toString().padStart(2, "0")}`;
+}
+
+function Back() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      className="h-4 w-4"
+    >
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 16l-5-6 5-6" />
+    </svg>
+  );
 }

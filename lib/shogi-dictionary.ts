@@ -1,10 +1,13 @@
 export type ShogiTerm = {
   jp: string;
   en: string;
-  category: "piece" | "opening" | "tactic" | "position" | "general";
+  category: "piece" | "opening" | "tactic" | "position" | "general" | "name";
 };
 
 export const SHOGI_DICTIONARY: ShogiTerm[] = [
+  // 人名（name）絶対に変えないこと。誤変換・推測変換を禁止
+  { jp: "鈴木肇", en: "Hajime Suzuki", category: "name" },
+
   // 駒（piece）
   { jp: "玉将", en: "King", category: "piece" },
   { jp: "王将", en: "King", category: "piece" },

@@ -37,7 +37,7 @@ const STEP_LABEL: Record<Step, string> = {
   review: "字幕の確認・編集・ダウンロード",
 };
 
-const MAX_DURATION_SEC = 8 * 60; // 同期APIの 10MB 制限から逆算した安全値
+const MAX_DURATION_SEC = 8 * 60;
 
 function fmtTime(sec: number): string {
   const m = Math.floor(sec / 60);
@@ -62,7 +62,6 @@ export default function SubtitlePage() {
   const [style, setStyle] = useState<TelopStyle>(DEFAULT_STYLE);
   const [currentTime, setCurrentTime] = useState(0);
 
-  // file が変わるたびに Object URL を作り直し、古い URL は破棄
   useEffect(() => {
     if (!file) {
       setVideoUrl(null);
@@ -104,13 +103,11 @@ export default function SubtitlePage() {
     setExtractRatio(0);
 
     try {
-      // 1. ブラウザで音声抽出
       setStep("extracting");
       const extracted = await extractAudioFromVideo(file, (p: ExtractProgress) => {
         if (p.ratio !== undefined) setExtractRatio(p.ratio);
       });
 
-      // 2. 書き起こし API へ
       setStep("transcribing");
       const fd = new FormData();
       fd.append(
@@ -131,7 +128,6 @@ export default function SubtitlePage() {
         throw new Error("音声を聞き取れませんでした。動画に音声が入っているか確認してください");
       }
 
-      // 3. 翻訳 API へ
       setStep("translating");
       const r2 = await fetch("/api/subtitle/translate", {
         method: "POST",
@@ -182,46 +178,27 @@ export default function SubtitlePage() {
   }
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-5xl flex-col gap-5 px-4 py-5 sm:py-8">
+    <main className="mx-auto flex min-h-screen w-full max-w-5xl flex-col gap-5 px-4 py-6 sm:px-6 sm:py-10">
       <header className="flex items-center justify-between">
-        <Link href="/" className="text-sm text-slate-500 hover:text-slate-900">
-          ← トップに戻る
+        <Link href="/" className="btn-ghost -ml-2 inline-flex items-center gap-1.5">
+          <Back /> Eigo
         </Link>
-        <span className="text-xs text-slate-500">動画字幕を作る</span>
+        <span className="chip">動画字幕</span>
       </header>
 
-      <div>
-        <h1 className="text-xl font-bold sm:text-2xl">動画字幕を作る</h1>
-        <p className="text-sm text-slate-500">
-          MP4 を選ぶだけ。書き起こし→英訳→SRT・テロップJSON まで自動で。
+      <div className="animate-fade-in flex flex-col gap-1.5">
+        <h1 className="text-2xl font-semibold tracking-tight text-white sm:text-3xl">
+          動画字幕をつくる
+        </h1>
+        <p className="text-sm text-zinc-400">
+          MP4 を選ぶだけ。書き起こし → 英訳 → SRT・テロップJSON まで自動で。
         </p>
       </div>
 
-      <ol className="flex flex-wrap gap-2 text-xs">
-        {STEP_ORDER.map((s, i) => {
-          const curIdx = STEP_ORDER.indexOf(step);
-          const sIdx = STEP_ORDER.indexOf(s);
-          const done = sIdx < curIdx;
-          const active = sIdx === curIdx;
-          return (
-            <li
-              key={s}
-              className={`rounded-full border px-3 py-1 ${
-                active
-                  ? "border-slate-900 bg-slate-900 text-white"
-                  : done
-                    ? "border-slate-300 bg-slate-100 text-slate-500"
-                    : "border-slate-200 bg-white text-slate-400"
-              }`}
-            >
-              {i + 1}. {STEP_LABEL[s]}
-            </li>
-          );
-        })}
-      </ol>
+      <Stepper step={step} />
 
       {error && (
-        <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+        <div className="animate-fade rounded-xl border border-rose-500/30 bg-rose-500/[0.06] px-4 py-3 text-sm text-rose-200">
           {error}
         </div>
       )}
@@ -274,6 +251,51 @@ export default function SubtitlePage() {
   );
 }
 
+/* ===================== Stepper ===================== */
+
+function Stepper({ step }: { step: Step }) {
+  const curIdx = STEP_ORDER.indexOf(step);
+  return (
+    <ol className="-mx-1 flex w-full items-center gap-1.5 overflow-x-auto px-1 pb-1 sm:gap-2">
+      {STEP_ORDER.map((s, i) => {
+        const sIdx = i;
+        const done = sIdx < curIdx;
+        const active = sIdx === curIdx;
+        return (
+          <li key={s} className="flex shrink-0 items-center gap-1.5 sm:gap-2">
+            <span
+              className={`flex h-6 w-6 items-center justify-center rounded-full text-[10px] font-semibold transition-colors duration-300 sm:h-7 sm:w-7 sm:text-xs ${
+                active
+                  ? "bg-white text-zinc-950"
+                  : done
+                  ? "bg-violet-500/20 text-violet-200"
+                  : "bg-white/[0.04] text-zinc-600"
+              }`}
+            >
+              {done ? <Check /> : i + 1}
+            </span>
+            <span
+              className={`whitespace-nowrap text-[11px] sm:text-xs ${
+                active ? "font-medium text-white" : "text-zinc-500"
+              }`}
+            >
+              {STEP_LABEL[s]}
+            </span>
+            {i < STEP_ORDER.length - 1 && (
+              <span
+                aria-hidden
+                className={`mx-1 h-px w-3 transition-colors duration-300 sm:w-6 ${
+                  done ? "bg-violet-500/40" : "bg-white/10"
+                }`}
+              />
+            )}
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
 /* ===================== Input Section ===================== */
 
 function InputSection(props: {
@@ -288,7 +310,7 @@ function InputSection(props: {
   const [dragOver, setDragOver] = useState(false);
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="animate-fade-in flex flex-col gap-4">
       <label
         onDragOver={(e) => {
           e.preventDefault();
@@ -301,10 +323,10 @@ function InputSection(props: {
           const f = e.dataTransfer.files?.[0];
           if (f) onPickFile(f);
         }}
-        className={`flex cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed bg-white p-8 text-center transition ${
+        className={`flex cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed p-8 text-center transition sm:p-12 ${
           dragOver
-            ? "border-slate-900 bg-slate-50"
-            : "border-slate-300 hover:border-slate-500"
+            ? "border-violet-400/60 bg-violet-500/[0.06]"
+            : "border-white/10 bg-white/[0.02] hover:border-white/20 hover:bg-white/[0.04]"
         }`}
       >
         <svg
@@ -313,7 +335,7 @@ function InputSection(props: {
           viewBox="0 0 24 24"
           strokeWidth={1.5}
           stroke="currentColor"
-          className="h-12 w-12 text-slate-400"
+          className="h-10 w-10 text-zinc-500 sm:h-12 sm:w-12"
         >
           <path
             strokeLinecap="round"
@@ -321,10 +343,10 @@ function InputSection(props: {
             d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"
           />
         </svg>
-        <div className="text-base font-semibold text-slate-700">
-          {file ? file.name : "ここに MP4 をドラッグ、またはタップして選択"}
+        <div className="break-all text-base font-semibold text-white">
+          {file ? file.name : "MP4 をドラッグ、またはタップして選択"}
         </div>
-        <div className="text-xs text-slate-500">
+        <div className="text-xs text-zinc-500">
           {file
             ? `${fmtBytes(file.size)} / ${fmtTime(duration)}`
             : `${Math.floor(maxDurationSec / 60)}分以下の MP4`}
@@ -337,23 +359,20 @@ function InputSection(props: {
         />
       </label>
 
-      <p className="text-xs text-slate-500">
-        ※ MVP 版のため、{Math.floor(maxDurationSec / 60)}分以下の動画にのみ対応。長い動画は次のバージョンで対応予定です。
+      <p className="text-xs text-zinc-500">
+        ※ 今のバージョンは {Math.floor(maxDurationSec / 60)}分以下の動画のみ対応。長い動画は次のバージョンで対応予定です。
       </p>
 
-      <div className="flex gap-2">
+      <div className="flex flex-col gap-2 sm:flex-row">
         <button
-          onClick={onStart}
+          onClick={props.onStart}
           disabled={!file}
-          className="flex-1 rounded-xl bg-slate-900 px-4 py-3 text-base font-semibold text-white shadow-sm transition active:scale-[0.99] disabled:cursor-not-allowed disabled:bg-slate-300"
+          className="btn-primary flex-1 inline-flex items-center justify-center gap-2"
         >
-          字幕を作る
+          字幕を作る <Arrow />
         </button>
         {file && (
-          <button
-            onClick={onClear}
-            className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:border-slate-400"
-          >
+          <button onClick={onClear} className="btn-secondary">
             選び直す
           </button>
         )}
@@ -376,25 +395,30 @@ function ProgressBox({
   hint: string;
 }) {
   return (
-    <div className="flex flex-col items-center justify-center gap-3 rounded-xl border border-slate-200 bg-white p-8">
-      {spin && (
-        <div className="h-10 w-10 animate-spin rounded-full border-4 border-slate-200 border-t-slate-900" />
+    <div className="animate-fade-in card flex flex-col items-center justify-center gap-4 px-6 py-12 sm:py-16">
+      {spin ? (
+        <div className="relative h-14 w-14">
+          <span className="absolute inset-0 animate-ping rounded-full bg-violet-500/30" />
+          <span className="absolute inset-1 rounded-full border-2 border-white/10 border-t-white/80 animate-spin" />
+        </div>
+      ) : (
+        <div className="h-10 w-10 animate-spin rounded-full border-4 border-white/10 border-t-violet-400" />
       )}
-      <div className="text-base font-medium">{label}</div>
+      <div className="text-base font-medium text-white">{label}</div>
       {ratio !== undefined && (
         <div className="w-full max-w-md">
-          <div className="h-2 overflow-hidden rounded-full bg-slate-200">
+          <div className="h-2 overflow-hidden rounded-full bg-white/[0.06]">
             <div
-              className="h-full rounded-full bg-slate-900 transition-all"
+              className="h-full rounded-full bg-gradient-to-r from-violet-500 to-fuchsia-500 transition-all"
               style={{ width: `${Math.round(ratio * 100)}%` }}
             />
           </div>
-          <div className="mt-1 text-center text-xs text-slate-500">
+          <div className="mt-1 text-center text-xs text-zinc-500">
             {Math.round(ratio * 100)}%
           </div>
         </div>
       )}
-      <div className="text-center text-xs text-slate-500">{hint}</div>
+      <p className="text-center text-xs text-zinc-500">{hint}</p>
     </div>
   );
 }
@@ -472,25 +496,34 @@ function ReviewSection(props: {
   }, []);
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="rounded-xl border border-slate-200 bg-white p-4">
-        <div className="text-xs text-slate-500">取り込んだ動画</div>
-        <div className="mt-1 truncate text-sm font-semibold">{filename}</div>
-        <div className="text-xs text-slate-500">
-          長さ {fmtTime(duration)} / セグメント {segments.length} 個
-        </div>
-        {warnings.length > 0 && (
-          <div className="mt-2 inline-block rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-800">
-            ⚠ 要確認 {warnings.length} 件
+    <div className="animate-fade-in flex flex-col gap-5">
+      <div className="card flex flex-wrap items-center gap-x-6 gap-y-2 p-4 sm:p-5">
+        <div className="min-w-0 flex-1">
+          <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-zinc-500">
+            取り込んだ動画
           </div>
-        )}
+          <div className="mt-0.5 truncate text-sm font-medium text-white">
+            {filename}
+          </div>
+        </div>
+        <div className="flex items-center gap-3 text-xs text-zinc-400">
+          <span>{fmtTime(duration)}</span>
+          <span className="h-3 w-px bg-white/10" />
+          <span>{segments.length} セグメント</span>
+          {warnings.length > 0 && (
+            <>
+              <span className="h-3 w-px bg-white/10" />
+              <span className="chip chip-warn">⚠ 要確認 {warnings.length}</span>
+            </>
+          )}
+        </div>
       </div>
 
-      {/* プレビュー：動画 + テロップ重ね */}
-      <div className="sticky top-0 z-10 -mx-4 bg-slate-50/95 px-4 py-3 backdrop-blur sm:static sm:mx-0 sm:bg-transparent sm:p-0">
+      {/* プレビュー */}
+      <div className="sticky top-0 z-20 -mx-4 bg-zinc-950/90 px-4 py-3 backdrop-blur sm:-mx-6 sm:px-6 lg:static lg:mx-0 lg:bg-transparent lg:p-0">
         <div
           ref={previewBoxRef}
-          className="relative aspect-video w-full overflow-hidden rounded-xl bg-black"
+          className="relative aspect-video w-full overflow-hidden rounded-2xl border border-white/[0.06] bg-black shadow-[0_20px_60px_-20px_rgba(0,0,0,0.6)]"
         >
           <video
             ref={videoRef}
@@ -509,22 +542,24 @@ function ReviewSection(props: {
             />
           )}
         </div>
-        <p className="mt-2 text-[11px] text-slate-500">
-          ▲ 再生中の英語字幕が、動画上にリアルタイムでプレビュー表示されます
+        <p className="mt-2 text-[11px] text-zinc-500">
+          再生中の英語字幕が、動画上にリアルタイムでプレビュー表示されます。
         </p>
       </div>
 
-      {/* テロップスタイル編集 */}
       <TelopStyleEditor style={style} onChange={onStyleChange} />
 
       {/* セグメント一覧 */}
-      <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
-        <div className="grid grid-cols-12 border-b border-slate-200 bg-slate-50 px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-          <div className="col-span-2 sm:col-span-1">時間</div>
-          <div className="col-span-5">日本語</div>
-          <div className="col-span-5 sm:col-span-6">英語（編集可）</div>
+      <div className="card overflow-hidden">
+        <div className="flex items-center justify-between border-b border-white/[0.06] px-4 py-3 sm:px-5">
+          <span className="text-[10px] font-medium uppercase tracking-[0.18em] text-zinc-500">
+            セグメント
+          </span>
+          <span className="hidden text-[11px] text-zinc-500 sm:inline">
+            時間 → ジャンプ／英語は直接編集
+          </span>
         </div>
-        <ul className="divide-y divide-slate-100">
+        <ul className="divide-y divide-white/[0.04]">
           {segments.map((s) => {
             const isActive = activeSegment?.index === s.index;
             const segWarnings = warningByIndex.get(s.index) ?? [];
@@ -532,48 +567,60 @@ function ReviewSection(props: {
             return (
               <li
                 key={s.index}
-                className={`grid grid-cols-12 gap-2 px-3 py-3 transition ${
-                  isActive ? "bg-slate-100" : hasWarn ? "bg-amber-50/50" : ""
+                className={`flex flex-col gap-3 px-4 py-4 transition-colors duration-200 sm:grid sm:grid-cols-12 sm:gap-3 sm:px-5 ${
+                  isActive
+                    ? "bg-violet-500/[0.06]"
+                    : hasWarn
+                    ? "bg-amber-500/[0.03]"
+                    : "hover:bg-white/[0.02]"
                 }`}
               >
                 <button
                   onClick={() => seekTo(s.startSec)}
-                  className="col-span-2 text-left text-xs font-medium text-slate-700 underline-offset-2 hover:underline sm:col-span-1"
+                  className="self-start text-left font-mono text-xs text-zinc-400 transition hover:text-white sm:col-span-1"
                   title="この場面を再生"
                 >
-                  {fmtTime(s.startSec)}
+                  ▶ {fmtTime(s.startSec)}
                 </button>
-                <div className="col-span-5 text-sm leading-relaxed text-slate-800">
-                  {highlightTerms(
-                    s.jp,
-                    s.hitTerms.map((t) => t.jp)
-                  )}
+                <div className="sm:col-span-5">
+                  <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-zinc-500 sm:hidden">
+                    日本語
+                  </div>
+                  <div className="mt-1 text-sm leading-relaxed text-zinc-300 sm:mt-0">
+                    {highlightTerms(
+                      s.jp,
+                      s.hitTerms.map((t) => t.jp)
+                    )}
+                  </div>
                   {s.hitTerms.length > 0 && (
-                    <div className="mt-1 flex flex-wrap gap-1">
+                    <div className="mt-1.5 flex flex-wrap gap-1">
                       {s.hitTerms.map((t) => (
                         <span
                           key={t.jp}
-                          className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] text-emerald-700"
+                          className="rounded-md bg-violet-500/[0.08] px-1.5 py-0.5 text-[10px] text-violet-200"
                         >
-                          {t.jp}→{t.en}
+                          {t.jp}
+                          <span className="mx-1 text-violet-400/60">→</span>
+                          {t.en}
                         </span>
                       ))}
                     </div>
                   )}
                 </div>
-                <div className="col-span-5 sm:col-span-6">
+                <div className="sm:col-span-6">
+                  <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-zinc-500 sm:hidden">
+                    英語（編集可）
+                  </div>
                   <textarea
                     value={s.en}
                     onChange={(e) => onEditEn(s.index, e.target.value)}
                     rows={2}
-                    className={`w-full resize-none rounded-lg border px-2 py-1.5 text-sm leading-relaxed outline-none focus:border-slate-900 ${
-                      hasWarn
-                        ? "border-amber-300 bg-amber-50"
-                        : "border-slate-200 bg-white"
+                    className={`mt-1 w-full resize-none rounded-lg border bg-white/[0.02] px-3 py-2 text-sm leading-relaxed text-zinc-100 outline-none transition focus:border-violet-500/40 focus:bg-white/[0.04] sm:mt-0 ${
+                      hasWarn ? "border-amber-500/30" : "border-white/[0.06]"
                     }`}
                   />
                   {segWarnings.map((w, i) => (
-                    <div key={i} className="mt-1 text-[11px] text-amber-700">
+                    <div key={i} className="mt-1 text-[11px] text-amber-300/80">
                       ⚠ {w.message}
                     </div>
                   ))}
@@ -584,17 +631,17 @@ function ReviewSection(props: {
         </ul>
       </div>
 
-      <div className="flex flex-col gap-2 sm:flex-row">
+      <div className="card flex flex-col gap-3 p-4 sm:p-6">
         <button
           onClick={onDownloadAll}
-          className="flex-1 rounded-xl bg-slate-900 px-4 py-3 text-base font-semibold text-white shadow-sm transition active:scale-[0.99]"
+          className="btn-primary inline-flex items-center justify-center gap-2"
         >
-          3 ファイルまとめてダウンロード（日本語SRT・英語SRT・テロップJSON）
+          <DownloadIcon /> 3 ファイルまとめてダウンロード
         </button>
-        <button
-          onClick={onReset}
-          className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:border-slate-400"
-        >
+        <p className="text-center text-[11px] text-zinc-500">
+          日本語SRT・英語SRT・テロップJSON
+        </p>
+        <button onClick={onReset} className="btn-ghost self-center">
           別の動画にする
         </button>
       </div>
@@ -611,7 +658,7 @@ function highlightTerms(text: string, terms: string[]): React.ReactNode {
   const parts = text.split(pattern);
   return parts.map((p, i) =>
     sorted.includes(p) ? (
-      <mark key={i} className="rounded bg-emerald-100 px-0.5 text-emerald-900">
+      <mark key={i} className="rounded bg-violet-500/[0.15] px-0.5 text-violet-100">
         {p}
       </mark>
     ) : (
@@ -622,4 +669,35 @@ function highlightTerms(text: string, terms: string[]): React.ReactNode {
 
 function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/* ===================== Icons ===================== */
+
+function Back() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.8} className="h-4 w-4">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 16l-5-6 5-6" />
+    </svg>
+  );
+}
+function Arrow() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.8} className="h-4 w-4">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M4 10h12m0 0l-5-5m5 5l-5 5" />
+    </svg>
+  );
+}
+function Check() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={2.4} className="h-3.5 w-3.5">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M5 10l3.5 3.5L15 6.5" />
+    </svg>
+  );
+}
+function DownloadIcon() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-4 w-4">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v12m0 0l-4-4m4 4l4-4M5 20h14" />
+    </svg>
+  );
 }
