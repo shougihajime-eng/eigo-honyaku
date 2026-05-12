@@ -9,6 +9,7 @@ import {
   SHOGI_DICTIONARY,
   type ShogiTerm,
 } from "@/lib/shogi-dictionary";
+import { fetchUserDictionary } from "@/lib/dictionary/user-store";
 import { detectCountdownSegments } from "./countdown";
 
 export type TranslatedSegment = {
@@ -21,6 +22,8 @@ export type TranslatedSegment = {
   hitTerms: { jp: string; en: string }[];
   kind?: "normal" | "countdown";
   countdownValue?: number;
+  // 逆翻訳チェック：英訳を日本語に戻したもの。意味乖離検出用
+  backJp?: string;
 };
 
 type InputSegment = {
@@ -63,6 +66,21 @@ const TRANSLATE_SYSTEM = `あなたは将棋界専門の英語字幕翻訳者で
 【出力】
 - 必ず指定された JSON 形式のみ。前置き・解説を一切付けない
 - 確信が持てない人名・固有名詞があれば、その index の en を空文字列にして翻訳を保留してよい（後で人間が確認する）`;
+
+const BACK_TRANSLATE_SYSTEM = `あなたは将棋界専門の翻訳検証者です。英語字幕を日本語に逆翻訳し、原文と意味が一致しているかを確認します。
+
+【目的】
+英→日に戻したテキストを元の日本語と比べて、意味のズレや情報の脱落を見つけます。
+逆翻訳はあくまで「英訳が原文の意味を保っているかの検証」が目的です。
+
+【判定基準】
+- "ok": 意味は概ね一致。表現の揺れは許容
+- "warn": 重要情報の欠落／意味の変化／棋士名・段位・戦法名の取り違え
+
+【出力】
+- 必ず指定 JSON 形式
+- note は短い日本語で「何がズレているか」
+- back は逆翻訳した日本語（できるだけ自然に）`;
 
 const REVIEW_SYSTEM = `あなたは将棋界専門の英語字幕の校閲者です。日本語原文と英訳のペアを見て、誤訳・不適切な箇所を指摘します。
 
@@ -125,6 +143,40 @@ ${JSON.stringify(
   const parsed = extractJson<{ translations: { index: number; en: string }[] }>(text);
   if (!parsed?.translations) throw new Error(`翻訳結果のパースに失敗: ${text.slice(0, 200)}`);
   return parsed.translations;
+}
+
+async function backTranslateBatch(
+  pairs: { index: number; jp: string; en: string }[]
+): Promise<{ index: number; back: string; verdict: "ok" | "warn"; note?: string }[]> {
+  const anthropic = getAnthropic();
+  const userContent = `次の英訳を日本語に戻し、原文と意味が一致しているか判定してください。
+
+入力（JSON 配列）:
+${JSON.stringify(pairs, null, 2)}
+
+出力フォーマット（厳守）:
+{"checks":[{"index":0,"back":"逆翻訳した日本語","verdict":"ok"},{"index":1,"back":"...","verdict":"warn","note":"段位が抜けている"}]}`;
+
+  const res = await anthropic.messages.create({
+    model: MODEL,
+    max_tokens: 3072,
+    system: BACK_TRANSLATE_SYSTEM,
+    messages: [{ role: "user", content: userContent }],
+  });
+
+  const text = res.content
+    .filter((b) => b.type === "text")
+    .map((b) => (b as { type: "text"; text: string }).text)
+    .join("");
+  const parsed = extractJson<{
+    checks: {
+      index: number;
+      back: string;
+      verdict: "ok" | "warn";
+      note?: string;
+    }[];
+  }>(text);
+  return parsed?.checks ?? [];
 }
 
 async function reviewBatch(
@@ -197,6 +249,14 @@ export async function translateAndReview(
   segments: InputSegment[],
   extraTerms: ShogiTerm[] = []
 ): Promise<TranslatedSegment[]> {
+  // 学習済みユーザー辞書をマージ（同じ jp があれば extraTerms（今回確認済み）を優先）
+  const userDict = await fetchUserDictionary();
+  const extraJp = new Set(extraTerms.map((t) => t.jp));
+  const mergedExtraTerms: ShogiTerm[] = [
+    ...extraTerms,
+    ...userDict.filter((t) => !extraJp.has(t.jp)),
+  ];
+
   // 1. 秒読みカウントダウンを先に検出
   const countdownMap = detectCountdownSegments(segments);
 
@@ -231,7 +291,7 @@ export async function translateAndReview(
 
   // 翻訳（10セグメントずつバッチ）
   for (const batch of chunk(translatable, 10)) {
-    const result = await translateBatch(batch, extraTerms);
+    const result = await translateBatch(batch, mergedExtraTerms);
     for (const r of result) {
       const target = out.find((s) => s.index === r.index);
       if (target) target.en = r.en;
@@ -239,7 +299,7 @@ export async function translateAndReview(
   }
 
   // 二重チェック（秒読み以外）
-  const reviewable = out.filter((s) => s.kind !== "countdown");
+  const reviewable = out.filter((s) => s.kind !== "countdown" && s.en);
   for (const batch of chunk(reviewable, 10)) {
     const pairs = batch.map((s) => ({ index: s.index, jp: s.jp, en: s.en }));
     const reviews = await reviewBatch(pairs);
@@ -247,6 +307,21 @@ export async function translateAndReview(
       if (r.verdict === "warn") {
         const target = out.find((s) => s.index === r.index);
         if (target) target.warning = r.note ?? "要確認";
+      }
+    }
+  }
+
+  // 逆翻訳チェック（英→日に戻して意味乖離を検出）
+  for (const batch of chunk(reviewable, 10)) {
+    const pairs = batch.map((s) => ({ index: s.index, jp: s.jp, en: s.en }));
+    const checks = await backTranslateBatch(pairs);
+    for (const c of checks) {
+      const target = out.find((s) => s.index === c.index);
+      if (!target) continue;
+      target.backJp = c.back;
+      if (c.verdict === "warn") {
+        const note = `逆翻訳ズレ: ${c.note ?? "原文と意味が違う可能性"}`;
+        target.warning = target.warning ? `${target.warning} / ${note}` : note;
       }
     }
   }

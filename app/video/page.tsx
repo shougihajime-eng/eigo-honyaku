@@ -15,6 +15,13 @@ import { DEFAULT_STYLE } from "@/lib/telop/defaults";
 import type { TelopSegment, TelopStyle, TelopWarning } from "@/lib/telop/types";
 import type { ExtractedNoun, NounCategory } from "@/lib/video/nouns";
 import type { ShogiTerm } from "@/lib/shogi-dictionary";
+
+type RawSegment = {
+  index: number;
+  startSec: number;
+  endSec: number;
+  jp: string;
+};
 import { checkAll } from "@/lib/telop/quality";
 import { toSrt } from "@/lib/video/srt";
 import {
@@ -34,6 +41,7 @@ type Step =
   | "input"
   | "downloading"
   | "transcribing"
+  | "transcript-check"
   | "noun-check"
   | "translating"
   | "review"
@@ -44,6 +52,7 @@ const STEP_ORDER: Step[] = [
   "input",
   "downloading",
   "transcribing",
+  "transcript-check",
   "noun-check",
   "translating",
   "review",
@@ -55,6 +64,7 @@ const STEP_LABEL: Record<Step, string> = {
   input: "URL",
   downloading: "取り込み",
   transcribing: "書き起こし",
+  "transcript-check": "書き起こし確認",
   "noun-check": "固有名詞確認",
   translating: "翻訳",
   review: "確認・編集",
@@ -85,6 +95,7 @@ export default function VideoPage() {
   const [draft, setDraftState] = useState<Draft | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [nouns, setNouns] = useState<ExtractedNoun[]>([]);
+  const [transcriptSegs, setTranscriptSegs] = useState<RawSegment[]>([]);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -111,6 +122,7 @@ export default function VideoPage() {
     setOutputs(null);
     setInfo(null);
     setNouns([]);
+    setTranscriptSegs([]);
     if (!url.trim()) return;
 
     try {
@@ -134,24 +146,50 @@ export default function VideoPage() {
       });
       const d2 = await r2.json();
       if (!r2.ok) throw new Error(d2.error);
-
-      // 翻訳前に固有名詞を抽出して、ユーザーに確認してもらう
-      setStep("noun-check");
-      const rn = await fetch("/api/video/extract-nouns", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ jobId: d1.jobId }),
-      });
-      const dn = await rn.json();
-      if (!rn.ok) throw new Error(dn.error);
-      setNouns((dn.nouns as ExtractedNoun[]) ?? []);
+      setTranscriptSegs((d2.segments as RawSegment[]) ?? []);
+      // 書き起こしを動画と一緒に確認してもらう
+      setStep("transcript-check");
     } catch (e) {
       setError(e instanceof Error ? e.message : "エラーが発生しました");
       setStep("input");
     }
   }
 
-  /** 固有名詞確認 → 翻訳を実行 */
+  /** 書き起こし確認 → 保存して固有名詞抽出に進む */
+  async function confirmTranscript() {
+    if (!jobId) return;
+    setError(null);
+    try {
+      const r = await fetch("/api/video/save-transcript", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jobId, segments: transcriptSegs }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error);
+
+      setStep("noun-check");
+      const rn = await fetch("/api/video/extract-nouns", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jobId }),
+      });
+      const dn = await rn.json();
+      if (!rn.ok) throw new Error(dn.error);
+      setNouns((dn.nouns as ExtractedNoun[]) ?? []);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "エラーが発生しました");
+      setStep("transcript-check");
+    }
+  }
+
+  function updateTranscriptJp(index: number, jp: string) {
+    setTranscriptSegs((prev) =>
+      prev.map((s) => (s.index === index ? { ...s, jp } : s))
+    );
+  }
+
+  /** 固有名詞確認 → 学習保存 → 翻訳を実行 */
   async function runTranslate() {
     if (!jobId) return;
     setError(null);
@@ -168,6 +206,23 @@ export default function VideoPage() {
                 ? "opening"
                 : ("general" as const),
         }));
+
+      // 学習辞書に保存（失敗しても翻訳は進める）
+      try {
+        await fetch("/api/dictionary", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            entries: extraTerms.map((t) => ({
+              jp: t.jp,
+              en: t.en,
+              category: t.category,
+            })),
+          }),
+        });
+      } catch {
+        // noop
+      }
 
       setStep("translating");
       const r3 = await fetch("/api/video/translate", {
@@ -413,12 +468,23 @@ export default function VideoPage() {
         step === "translating" ||
         step === "rendering") && <ProcessingState step={step} />}
 
+      {step === "transcript-check" && jobId && (
+        <TranscriptCheckSection
+          jobId={jobId}
+          title={title}
+          segments={transcriptSegs}
+          onEditJp={updateTranscriptJp}
+          onConfirm={confirmTranscript}
+          onCancel={() => setStep("input")}
+        />
+      )}
+
       {step === "noun-check" && (
         <NounCheckSection
           nouns={nouns}
           onChange={updateNoun}
           onConfirm={runTranslate}
-          onCancel={() => setStep("input")}
+          onCancel={() => setStep("transcript-check")}
         />
       )}
 
@@ -608,6 +674,126 @@ function ProcessingState({ step }: { step: Step }) {
       <p className="text-center text-xs text-zinc-500">
         5分動画でだいたい1〜3分。閉じずにお待ちください。
       </p>
+    </div>
+  );
+}
+
+/* ===================== Transcript check ===================== */
+
+function TranscriptCheckSection({
+  jobId,
+  title,
+  segments,
+  onEditJp,
+  onConfirm,
+  onCancel,
+}: {
+  jobId: string;
+  title: string;
+  segments: RawSegment[];
+  onEditJp: (index: number, jp: string) => void;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [activeIndex, setActiveIndex] = useState<number | null>(null);
+  const [now, setNow] = useState(0);
+
+  const videoUrl = `/api/video/file?jobId=${jobId}&kind=source`;
+
+  useEffect(() => {
+    const found = segments.find((s) => now >= s.startSec && now < s.endSec);
+    if (found && found.index !== activeIndex) setActiveIndex(found.index);
+  }, [now, segments, activeIndex]);
+
+  function seekTo(sec: number) {
+    const v = videoRef.current;
+    if (!v) return;
+    v.currentTime = sec;
+    v.play().catch(() => {});
+  }
+
+  return (
+    <div className="animate-fade-in flex flex-col gap-5">
+      <div className="card flex flex-col gap-3 p-5 sm:p-6">
+        <div>
+          <h2 className="text-lg font-semibold text-white">
+            書き起こしを確認してください
+          </h2>
+          <p className="mt-1 text-xs text-zinc-400 leading-relaxed">
+            動画を再生しながら、聞こえた日本語と合っているか確認してください。
+            <span className="text-amber-300">
+              ここで直すと、その後の翻訳が一気に正確になります。
+            </span>
+            棋士名・戦法・専門用語は特に注意。
+          </p>
+        </div>
+        {title && (
+          <div className="text-xs text-zinc-500 break-words">{title}</div>
+        )}
+
+        <div className="relative aspect-video w-full overflow-hidden rounded-xl bg-black">
+          <video
+            ref={videoRef}
+            src={videoUrl}
+            controls
+            preload="metadata"
+            playsInline
+            className="absolute inset-0 h-full w-full"
+            onTimeUpdate={(e) => setNow(e.currentTarget.currentTime)}
+          />
+        </div>
+      </div>
+
+      <div className="card overflow-hidden p-0">
+        <div className="border-b border-white/[0.06] px-5 py-3 text-xs text-zinc-400">
+          {segments.length} 個のセグメント。再生位置のセグメントが自動でハイライトされます。
+        </div>
+        <ul className="divide-y divide-white/[0.04]">
+          {segments.map((s) => {
+            const isActive = activeIndex === s.index;
+            return (
+              <li
+                key={s.index}
+                className={`grid grid-cols-12 gap-3 px-5 py-3 transition-colors ${
+                  isActive ? "bg-violet-500/[0.08]" : "hover:bg-white/[0.02]"
+                }`}
+              >
+                <button
+                  onClick={() => seekTo(s.startSec)}
+                  className="col-span-3 self-start text-left text-xs font-mono text-zinc-400 transition hover:text-white sm:col-span-2"
+                  title="この場面から再生"
+                >
+                  ▶ {fmtTime(s.startSec)}
+                </button>
+                <div className="col-span-9 sm:col-span-10">
+                  <textarea
+                    value={s.jp}
+                    onChange={(e) => onEditJp(s.index, e.target.value)}
+                    rows={2}
+                    className="w-full resize-none rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2 text-sm leading-relaxed text-zinc-100 outline-none transition focus:border-violet-500/40 focus:bg-white/[0.04]"
+                  />
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+
+      <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+        <button
+          onClick={onCancel}
+          className="rounded-lg border border-white/[0.08] bg-white/[0.02] px-4 py-2 text-sm text-zinc-300 transition hover:bg-white/[0.04]"
+        >
+          ← 最初に戻る
+        </button>
+        <button
+          onClick={onConfirm}
+          className="btn-primary rounded-lg px-5 py-2 text-sm"
+        >
+          この書き起こしで進む →
+        </button>
+      </div>
     </div>
   );
 }
@@ -1028,6 +1214,11 @@ function ReviewSection(props: {
                       hasWarn ? "border-amber-500/30" : "border-white/[0.06]"
                     }`}
                   />
+                  {s.backJp && (
+                    <div className="mt-1 text-[11px] text-zinc-500">
+                      <span className="text-zinc-400">逆翻訳:</span> {s.backJp}
+                    </div>
+                  )}
                   {segWarnings.map((w, i) => (
                     <div key={i} className="mt-1 text-[11px] text-amber-300/80">
                       ⚠ {w.message}

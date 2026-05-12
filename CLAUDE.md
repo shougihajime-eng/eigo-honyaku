@@ -65,11 +65,28 @@
     - CLAUDE.md 上部に「永続ルール」セクションを追加（黒帯優先・中央禁止・下部・見やすさ最優先）
     - `lib/telop/defaults.ts` の DEFAULT_STYLE コメントを強化
     - 今後はユーザーから明示の指示が無くてもこのルールを守る
+  - **翻訳品質の徹底強化（誤訳ゼロ計画）**（2026-05-12）
+    - **秒読みカウントダウン演出**: 「1, 2, 3...」を自動検出 → 翻訳せず色付き数字（10〜6白／5〜3黄／2〜1赤）で表示
+    - **翻訳前の固有名詞確認画面**: 書き起こし直後に Claude が棋士名・戦法・棋戦・段位を抽出 → ユーザーが英訳を確認・修正してから翻訳に進む
+    - **書き起こし確認・修正ステップ**: 動画を見ながら日本語の文字起こしを直接編集できる新ステップ。誤訳の元から断つ
+    - **逆翻訳チェック**: 翻訳結果を日本語に戻して原文と比較。意味乖離を警告（レビュー画面に表示）
+    - **辞書の自動学習（Supabase）**: 「固有名詞確認」で確定した英訳を `eigo_honyaku.user_dictionary` に保存 → 次回以降の動画で自動適用
+    - 翻訳プロンプトを将棋界専門ローカライズに書き換え（推測禁止・段位維持・JSF表記優先・AI装飾禁止）
+    - 鈴木肇 → Hajime Suzuki を辞書に固定
 - 🟡 **進行中**: なし
 - 🔜 **次の一歩**:
-  1. **スマホ実機で `https://eigo-honyaku.vercel.app` を開いて表示確認**（公開反映に1〜2分）
-  2. **長尺動画で実際に試す**（10〜30分の将棋YouTube動画を `/video` で）
+  1. **新しい動画で5機能まとめて実機検証**（書き起こし確認→固有名詞確認→翻訳→逆翻訳→辞書学習）
+  2. **本番に反映＆Vercelに Supabase 環境変数を登録**（GitHub に push 済み・要 `NEXT_PUBLIC_SUPABASE_URL` と `NEXT_PUBLIC_SUPABASE_ANON_KEY` をVercelにも追加）
   3. 1時間級の超長尺対応 = Speech v2 batchRecognize + GCS 経由（次フェーズ）
+
+### 🗄️ 共有 Supabase 設定（2026-05-12 完了）
+
+- **スキーマ**: `eigo_honyaku`
+- **テーブル**: `user_dictionary` （jp UNIQUE / en / category / used_count）
+- **RLS**: 単一ユーザー前提の緩めポリシー（SELECT/INSERT/UPDATE 全許可）
+- **PostgREST 公開**: `eigo_honyaku` を Exposed schemas に追加済み
+- **Migration**: `supabase/migrations/20260512_user_dictionary.sql`
+- **環境変数**: `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY`（本番 Vercel にも要登録）
 
 ### ✅ 公開完了 (2026-05-12)
 

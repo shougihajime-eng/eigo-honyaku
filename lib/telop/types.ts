@@ -36,6 +36,8 @@ export type TelopSegment = {
   // countdownValue で残り秒数を持ち、UI/SRT で色付き大きめ表示にする
   kind?: "normal" | "countdown";
   countdownValue?: number;
+  // 逆翻訳した日本語（英訳が原文の意味を保っているかの確認用）
+  backJp?: string;
 };
 
 export type TelopWarning = {
