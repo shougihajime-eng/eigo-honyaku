@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { translateAndReview } from "@/lib/video/translate";
+import type { ShogiTerm } from "@/lib/shogi-dictionary";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -17,6 +18,7 @@ export async function POST(req: NextRequest) {
         endSec: number;
         jp: string;
       }>;
+      extraTerms?: ShogiTerm[];
     };
     if (!Array.isArray(body.segments)) {
       return NextResponse.json(
@@ -24,7 +26,10 @@ export async function POST(req: NextRequest) {
         { status: 400 }
       );
     }
-    const translated = await translateAndReview(body.segments);
+    const translated = await translateAndReview(
+      body.segments,
+      body.extraTerms ?? []
+    );
     return NextResponse.json({ segments: translated });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "unknown error";

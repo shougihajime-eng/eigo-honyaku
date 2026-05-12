@@ -3,14 +3,20 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { jobDir } from "@/lib/video/jobs";
 import { translateAndReview } from "@/lib/video/translate";
+import type { ShogiTerm } from "@/lib/shogi-dictionary";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
 export async function POST(req: NextRequest) {
   try {
-    const { jobId } = (await req.json()) as { jobId?: string };
-    if (!jobId) return NextResponse.json({ error: "jobId が必要です" }, { status: 400 });
+    const { jobId, extraTerms } = (await req.json()) as {
+      jobId?: string;
+      // ユーザーが翻訳前画面で確認した固有名詞辞書
+      extraTerms?: ShogiTerm[];
+    };
+    if (!jobId)
+      return NextResponse.json({ error: "jobId が必要です" }, { status: 400 });
     const dir = jobDir(jobId);
     const raw = await fs.readFile(path.join(dir, "segments.json"), "utf8");
     const segs = JSON.parse(raw) as Array<{
@@ -19,7 +25,7 @@ export async function POST(req: NextRequest) {
       endSec: number;
       jp: string;
     }>;
-    const translated = await translateAndReview(segs);
+    const translated = await translateAndReview(segs, extraTerms ?? []);
 
     await fs.writeFile(
       path.join(dir, "translated.json"),

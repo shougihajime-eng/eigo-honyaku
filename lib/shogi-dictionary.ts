@@ -140,12 +140,23 @@ export const SHOGI_DICTIONARY: ShogiTerm[] = [
 /**
  * 入力文中で辞書語を検出し、AIに渡す「強制対訳ヒント」を組み立てる
  * 長い語から順にマッチングし、部分一致の競合を避ける
+ *
+ * extraTerms: ユーザーが翻訳前画面で確認した「セッション辞書」。
+ *             同じ jp があれば extraTerms を優先する（ユーザー指定が常に最強）
  */
-export function buildTranslationHints(input: string): {
+export function buildTranslationHints(
+  input: string,
+  extraTerms: ShogiTerm[] = []
+): {
   hints: ShogiTerm[];
   hintBlock: string;
 } {
-  const sorted = [...SHOGI_DICTIONARY].sort((a, b) => b.jp.length - a.jp.length);
+  const extraMap = new Map(extraTerms.map((t) => [t.jp, t]));
+  const merged: ShogiTerm[] = [
+    ...extraTerms,
+    ...SHOGI_DICTIONARY.filter((t) => !extraMap.has(t.jp)),
+  ];
+  const sorted = [...merged].sort((a, b) => b.jp.length - a.jp.length);
   const found: ShogiTerm[] = [];
   const seen = new Set<string>();
   for (const term of sorted) {
@@ -157,6 +168,6 @@ export function buildTranslationHints(input: string): {
   if (found.length === 0) return { hints: [], hintBlock: "" };
 
   const lines = found.map((t) => `「${t.jp}」 → "${t.en}"`).join("\n");
-  const hintBlock = `\n\n以下の将棋用語は必ずこの英訳を用いること（他の訳語を使わない）：\n${lines}`;
+  const hintBlock = `\n\n以下の将棋用語・固有名詞は必ずこの英訳を用いること（他の訳語を使わない・推測変換禁止）：\n${lines}`;
   return { hints: found, hintBlock };
 }

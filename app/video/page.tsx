@@ -13,6 +13,8 @@ import { TelopRender } from "@/components/TelopRender";
 import { TelopStyleEditor } from "@/components/TelopStyleEditor";
 import { DEFAULT_STYLE } from "@/lib/telop/defaults";
 import type { TelopSegment, TelopStyle, TelopWarning } from "@/lib/telop/types";
+import type { ExtractedNoun, NounCategory } from "@/lib/video/nouns";
+import type { ShogiTerm } from "@/lib/shogi-dictionary";
 import { checkAll } from "@/lib/telop/quality";
 import { toSrt } from "@/lib/video/srt";
 import {
@@ -32,6 +34,7 @@ type Step =
   | "input"
   | "downloading"
   | "transcribing"
+  | "noun-check"
   | "translating"
   | "review"
   | "rendering"
@@ -41,6 +44,7 @@ const STEP_ORDER: Step[] = [
   "input",
   "downloading",
   "transcribing",
+  "noun-check",
   "translating",
   "review",
   "rendering",
@@ -51,6 +55,7 @@ const STEP_LABEL: Record<Step, string> = {
   input: "URL",
   downloading: "取り込み",
   transcribing: "書き起こし",
+  "noun-check": "固有名詞確認",
   translating: "翻訳",
   review: "確認・編集",
   rendering: "焼き込み",
@@ -79,6 +84,7 @@ export default function VideoPage() {
   const [hasSourceVideo, setHasSourceVideo] = useState(true);
   const [draft, setDraftState] = useState<Draft | null>(null);
   const [info, setInfo] = useState<string | null>(null);
+  const [nouns, setNouns] = useState<ExtractedNoun[]>([]);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -104,6 +110,7 @@ export default function VideoPage() {
     setError(null);
     setOutputs(null);
     setInfo(null);
+    setNouns([]);
     if (!url.trim()) return;
 
     try {
@@ -128,11 +135,45 @@ export default function VideoPage() {
       const d2 = await r2.json();
       if (!r2.ok) throw new Error(d2.error);
 
+      // 翻訳前に固有名詞を抽出して、ユーザーに確認してもらう
+      setStep("noun-check");
+      const rn = await fetch("/api/video/extract-nouns", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jobId: d1.jobId }),
+      });
+      const dn = await rn.json();
+      if (!rn.ok) throw new Error(dn.error);
+      setNouns((dn.nouns as ExtractedNoun[]) ?? []);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "エラーが発生しました");
+      setStep("input");
+    }
+  }
+
+  /** 固有名詞確認 → 翻訳を実行 */
+  async function runTranslate() {
+    if (!jobId) return;
+    setError(null);
+    try {
+      const extraTerms: ShogiTerm[] = nouns
+        .filter((n) => n.en && n.en.trim().length > 0)
+        .map((n) => ({
+          jp: n.jp,
+          en: n.en.trim(),
+          category:
+            n.category === "person"
+              ? "name"
+              : n.category === "opening"
+                ? "opening"
+                : ("general" as const),
+        }));
+
       setStep("translating");
       const r3 = await fetch("/api/video/translate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ jobId: d1.jobId }),
+        body: JSON.stringify({ jobId, extraTerms }),
       });
       const d3 = await r3.json();
       if (!r3.ok) throw new Error(d3.error);
@@ -142,8 +183,14 @@ export default function VideoPage() {
       setStep("review");
     } catch (e) {
       setError(e instanceof Error ? e.message : "エラーが発生しました");
-      setStep("input");
+      setStep("noun-check");
     }
+  }
+
+  function updateNoun(jp: string, en: string) {
+    setNouns((prev) =>
+      prev.map((n) => (n.jp === jp ? { ...n, en } : n))
+    );
   }
 
   function updateEn(index: number, en: string) {
@@ -366,6 +413,15 @@ export default function VideoPage() {
         step === "translating" ||
         step === "rendering") && <ProcessingState step={step} />}
 
+      {step === "noun-check" && (
+        <NounCheckSection
+          nouns={nouns}
+          onChange={updateNoun}
+          onConfirm={runTranslate}
+          onCancel={() => setStep("input")}
+        />
+      )}
+
       {step === "review" && (
         <ReviewSection
           jobId={jobId}
@@ -556,6 +612,154 @@ function ProcessingState({ step }: { step: Step }) {
   );
 }
 
+/* ===================== Noun check ===================== */
+
+const NOUN_CAT_LABEL: Record<NounCategory, string> = {
+  person: "🧑 棋士名",
+  opening: "🎯 戦法・囲い",
+  tournament: "🏆 棋戦",
+  title: "🎖 段位・称号",
+  term: "📖 将棋用語",
+};
+
+const NOUN_CAT_ORDER: NounCategory[] = [
+  "person",
+  "title",
+  "opening",
+  "tournament",
+  "term",
+];
+
+function NounCheckSection({
+  nouns,
+  onChange,
+  onConfirm,
+  onCancel,
+}: {
+  nouns: ExtractedNoun[];
+  onChange: (jp: string, en: string) => void;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  const grouped = NOUN_CAT_ORDER.map((cat) => ({
+    cat,
+    items: nouns.filter((n) => n.category === cat),
+  })).filter((g) => g.items.length > 0);
+
+  const unknown = nouns.filter((n) => !n.en.trim());
+  const hasUnknown = unknown.length > 0;
+
+  return (
+    <div className="animate-fade-in card flex flex-col gap-5 p-5 sm:p-6">
+      <div className="flex flex-col gap-1">
+        <h2 className="text-lg font-semibold text-white">
+          固有名詞を確認してください
+        </h2>
+        <p className="text-xs text-zinc-400 leading-relaxed">
+          棋士名・戦法名・棋戦名・段位を翻訳の前に確認します。日本将棋連盟の公式英語表記を優先してください。
+          <span className="text-rose-300">不明な項目（赤）が残っていると翻訳できません。</span>
+        </p>
+      </div>
+
+      {nouns.length === 0 ? (
+        <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-4 py-6 text-center text-sm text-zinc-400">
+          固有名詞は検出されませんでした。そのまま翻訳に進めます。
+        </div>
+      ) : (
+        <div className="flex flex-col gap-4">
+          {grouped.map((g) => (
+            <div key={g.cat} className="flex flex-col gap-2">
+              <div className="text-xs font-medium text-zinc-300">
+                {NOUN_CAT_LABEL[g.cat]}
+              </div>
+              <ul className="flex flex-col divide-y divide-white/[0.04] rounded-lg border border-white/[0.06] bg-white/[0.02]">
+                {g.items.map((n) => {
+                  const empty = !n.en.trim();
+                  return (
+                    <li
+                      key={n.jp}
+                      className={`grid grid-cols-12 items-center gap-3 px-4 py-3 ${
+                        empty
+                          ? "bg-rose-500/[0.06]"
+                          : n.source === "ai-uncertain"
+                            ? "bg-amber-500/[0.04]"
+                            : ""
+                      }`}
+                    >
+                      <div className="col-span-12 sm:col-span-4 text-sm text-zinc-100">
+                        {n.jp}
+                      </div>
+                      <div className="col-span-12 sm:col-span-6">
+                        <input
+                          type="text"
+                          value={n.en}
+                          onChange={(e) => onChange(n.jp, e.target.value)}
+                          placeholder={
+                            empty ? "英語表記を入力してください" : ""
+                          }
+                          className={`w-full rounded-md border bg-white/[0.02] px-3 py-1.5 text-sm text-zinc-100 outline-none transition focus:border-violet-500/40 focus:bg-white/[0.04] ${
+                            empty
+                              ? "border-rose-500/40"
+                              : "border-white/[0.06]"
+                          }`}
+                        />
+                      </div>
+                      <div className="col-span-12 sm:col-span-2 text-[10px]">
+                        {n.source === "dictionary" && (
+                          <span className="rounded bg-emerald-500/[0.12] px-1.5 py-0.5 text-emerald-200">
+                            ✓ 辞書
+                          </span>
+                        )}
+                        {n.source === "ai-confident" && (
+                          <span className="rounded bg-sky-500/[0.12] px-1.5 py-0.5 text-sky-200">
+                            AI 自信あり
+                          </span>
+                        )}
+                        {n.source === "ai-uncertain" && (
+                          <span className="rounded bg-amber-500/[0.12] px-1.5 py-0.5 text-amber-200">
+                            ? 要確認
+                          </span>
+                        )}
+                        {n.source === "unknown" && (
+                          <span className="rounded bg-rose-500/[0.18] px-1.5 py-0.5 text-rose-200">
+                            ! 未確定
+                          </span>
+                        )}
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {hasUnknown && (
+        <div className="rounded-lg border border-rose-500/30 bg-rose-500/[0.05] px-4 py-3 text-sm text-rose-200">
+          まだ {unknown.length} 件、英語表記が空です。すべて入力するか、辞書照合できる別の表記に直してから翻訳に進んでください。
+        </div>
+      )}
+
+      <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+        <button
+          onClick={onCancel}
+          className="rounded-lg border border-white/[0.08] bg-white/[0.02] px-4 py-2 text-sm text-zinc-300 transition hover:bg-white/[0.04]"
+        >
+          ← 最初に戻る
+        </button>
+        <button
+          onClick={onConfirm}
+          disabled={hasUnknown}
+          className="btn-primary rounded-lg px-5 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          この内容で翻訳を開始 →
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /* ===================== Done ===================== */
 
 function DoneSection({
@@ -735,6 +939,11 @@ function ReviewSection(props: {
               text={previewSegment.en}
               style={style}
               containerWidth={previewWidth}
+              countdownValue={
+                previewSegment.kind === "countdown"
+                  ? previewSegment.countdownValue
+                  : undefined
+              }
             />
           )}
         </div>
@@ -788,6 +997,11 @@ function ReviewSection(props: {
                 </button>
                 <div className="col-span-10 sm:col-span-5">
                   <div className="text-sm leading-relaxed text-zinc-300">
+                    {s.kind === "countdown" && (
+                      <span className="mr-2 inline-block rounded-md bg-rose-500/[0.15] px-1.5 py-0.5 align-middle text-[10px] font-bold text-rose-200">
+                        🕐 秒読み {s.countdownValue}
+                      </span>
+                    )}
                     {highlightTerms(s.jp, s.hitTerms.map((t) => t.jp))}
                   </div>
                   {s.hitTerms.length > 0 && (

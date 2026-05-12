@@ -4,7 +4,12 @@
  * - 翻訳結果を再度 Sonnet に渡し、誤訳・違和感を検出させる
  */
 import Anthropic from "@anthropic-ai/sdk";
-import { buildTranslationHints, SHOGI_DICTIONARY } from "@/lib/shogi-dictionary";
+import {
+  buildTranslationHints,
+  SHOGI_DICTIONARY,
+  type ShogiTerm,
+} from "@/lib/shogi-dictionary";
+import { detectCountdownSegments } from "./countdown";
 
 export type TranslatedSegment = {
   index: number;
@@ -14,6 +19,8 @@ export type TranslatedSegment = {
   en: string;
   warning?: string;
   hitTerms: { jp: string; en: string }[];
+  kind?: "normal" | "countdown";
+  countdownValue?: number;
 };
 
 type InputSegment = {
@@ -83,10 +90,14 @@ function chunk<T>(arr: T[], n: number): T[][] {
 }
 
 async function translateBatch(
-  batch: InputSegment[]
+  batch: InputSegment[],
+  extraTerms: ShogiTerm[]
 ): Promise<{ index: number; en: string }[]> {
   const anthropic = getAnthropic();
-  const allHints = buildTranslationHints(batch.map((b) => b.jp).join("\n"));
+  const allHints = buildTranslationHints(
+    batch.map((b) => b.jp).join("\n"),
+    extraTerms
+  );
 
   const userContent = `次の日本語セリフを英訳してください。各セリフを1行ずつ、JSONで返してください。
 
@@ -183,28 +194,53 @@ function detectHitTerms(jp: string): { jp: string; en: string }[] {
 }
 
 export async function translateAndReview(
-  segments: InputSegment[]
+  segments: InputSegment[],
+  extraTerms: ShogiTerm[] = []
 ): Promise<TranslatedSegment[]> {
-  const out: TranslatedSegment[] = segments.map((s) => ({
-    index: s.index,
-    startSec: s.startSec,
-    endSec: s.endSec,
-    jp: s.jp,
-    en: "",
-    hitTerms: detectHitTerms(s.jp),
-  }));
+  // 1. 秒読みカウントダウンを先に検出
+  const countdownMap = detectCountdownSegments(segments);
+
+  const out: TranslatedSegment[] = segments.map((s) => {
+    const cd = countdownMap.get(s.index);
+    if (cd != null) {
+      // 秒読みは翻訳せず、数字をそのままテキストにする
+      return {
+        index: s.index,
+        startSec: s.startSec,
+        endSec: s.endSec,
+        jp: s.jp,
+        en: String(cd),
+        hitTerms: [],
+        kind: "countdown" as const,
+        countdownValue: cd,
+      };
+    }
+    return {
+      index: s.index,
+      startSec: s.startSec,
+      endSec: s.endSec,
+      jp: s.jp,
+      en: "",
+      hitTerms: detectHitTerms(s.jp),
+      kind: "normal" as const,
+    };
+  });
+
+  // 2. 通常セグメントだけを翻訳対象にする
+  const translatable = segments.filter((s) => !countdownMap.has(s.index));
 
   // 翻訳（10セグメントずつバッチ）
-  for (const batch of chunk(segments, 10)) {
-    const result = await translateBatch(batch);
+  for (const batch of chunk(translatable, 10)) {
+    const result = await translateBatch(batch, extraTerms);
     for (const r of result) {
       const target = out.find((s) => s.index === r.index);
       if (target) target.en = r.en;
     }
   }
 
-  // 二重チェック（同じくバッチ）
-  for (const batch of chunk(out, 10)) {
+  // 二重チェック（秒読み以外）
+  const reviewable = out.filter((s) => s.kind !== "countdown");
+  for (const batch of chunk(reviewable, 10)) {
     const pairs = batch.map((s) => ({ index: s.index, jp: s.jp, en: s.en }));
     const reviews = await reviewBatch(pairs);
     for (const r of reviews) {

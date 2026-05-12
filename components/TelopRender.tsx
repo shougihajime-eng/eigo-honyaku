@@ -2,20 +2,29 @@
 
 import type { CSSProperties } from "react";
 import { wrapLines } from "@/lib/telop/quality";
+import { countdownColor } from "@/lib/video/countdown";
 import type { TelopStyle } from "@/lib/telop/types";
 
 type Props = {
   text: string;
   style: TelopStyle;
   containerWidth: number;
+  // 秒読みカウントダウンとして大きく色付きで表示するか
+  countdownValue?: number;
 };
 
 /**
  * テロップ1枚を実際の見た目で描画
  * - containerWidth は親の動画フレーム幅(px)。fontSize はそれに対するスケーリングをしない（指定値そのまま使う）
  *   ※ 親側で fontSize の意味を「実動画解像度に対する％」として管理する場合は、別途換算する
+ * - countdownValue が指定された時は通常字幕とは別の演出（大きな数字＋緊張感のある色）
  */
-export function TelopRender({ text, style, containerWidth }: Props) {
+export function TelopRender({ text, style, containerWidth, countdownValue }: Props) {
+  if (typeof countdownValue === "number") {
+    return (
+      <CountdownNumber value={countdownValue} containerWidth={containerWidth} />
+    );
+  }
   const lines = wrapLines(text || "", style.maxLineChars).slice(0, style.maxLines);
   const verticalAlign =
     style.align === "top"
@@ -102,4 +111,44 @@ function outlineShadow(color: string, width: number): string {
     [w, w],
   ];
   return offsets.map(([dx, dy]) => `${dx}px ${dy}px 0 ${color}`).join(", ");
+}
+
+/**
+ * 秒読みカウントダウンの数字を、画面右上に大きく色付きで表示
+ * - 10〜6: 白
+ * -  5〜3: 黄
+ * -  2〜1: 赤
+ * 通常字幕とは別エリアに置くので、本来の字幕と重ならず両方読める。
+ */
+function CountdownNumber({
+  value,
+  containerWidth,
+}: {
+  value: number;
+  containerWidth: number;
+}) {
+  const color = countdownColor(value);
+  const size = Math.max(36, Math.round(containerWidth * 0.16));
+  const pad = Math.max(8, Math.round(containerWidth * 0.02));
+  const wrap: CSSProperties = {
+    position: "absolute",
+    top: pad,
+    right: pad,
+    pointerEvents: "none",
+  };
+  const numStyle: CSSProperties = {
+    fontSize: size,
+    fontWeight: 900,
+    color,
+    lineHeight: 1,
+    fontFamily:
+      '"Inter", "Helvetica Neue", Arial, "Hiragino Kaku Gothic ProN", sans-serif',
+    textShadow: outlineShadow("#000000", Math.max(2, Math.round(size * 0.05))),
+    letterSpacing: "-0.04em",
+  };
+  return (
+    <div style={wrap}>
+      <div style={numStyle}>{value}</div>
+    </div>
+  );
 }

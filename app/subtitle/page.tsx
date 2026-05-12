@@ -539,6 +539,11 @@ function ReviewSection(props: {
               text={activeSegment.en}
               style={style}
               containerWidth={previewWidth}
+              countdownValue={
+                activeSegment.kind === "countdown"
+                  ? activeSegment.countdownValue
+                  : undefined
+              }
             />
           )}
         </div>

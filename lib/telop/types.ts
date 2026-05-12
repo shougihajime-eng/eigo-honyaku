@@ -31,6 +31,11 @@ export type TelopSegment = {
   en: string;
   warning?: string;
   hitTerms: { jp: string; en: string }[];
+  // 秒読みカウントダウン演出（自動検出）
+  // kind === "countdown" の時、en は数字そのもの（"10","9",...,"1"）になる
+  // countdownValue で残り秒数を持ち、UI/SRT で色付き大きめ表示にする
+  kind?: "normal" | "countdown";
+  countdownValue?: number;
 };
 
 export type TelopWarning = {
