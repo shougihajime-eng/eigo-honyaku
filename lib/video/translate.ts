@@ -1,0 +1,190 @@
+/**
+ * セグメント単位の翻訳（Claude Sonnet 4.6）+ 別プロンプトでの二重チェック
+ * - 一度に複数セグメントを JSON でまとめて翻訳（コスト・速度を抑える）
+ * - 翻訳結果を再度 Sonnet に渡し、誤訳・違和感を検出させる
+ */
+import Anthropic from "@anthropic-ai/sdk";
+import { buildTranslationHints, SHOGI_DICTIONARY } from "@/lib/shogi-dictionary";
+
+export type TranslatedSegment = {
+  index: number;
+  startSec: number;
+  endSec: number;
+  jp: string;
+  en: string;
+  warning?: string;
+  hitTerms: { jp: string; en: string }[];
+};
+
+type InputSegment = {
+  index: number;
+  startSec: number;
+  endSec: number;
+  jp: string;
+};
+
+const MODEL = "claude-sonnet-4-6";
+
+function getAnthropic(): Anthropic {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) throw new Error("ANTHROPIC_API_KEY が設定されていません。");
+  return new Anthropic({ apiKey });
+}
+
+const TRANSLATE_SYSTEM = `あなたは将棋の解説動画の英語字幕翻訳者です。日本語のセリフを、海外の将棋ファンに通じる自然で正確な英語字幕に翻訳します。
+
+ルール:
+- 将棋専門用語は必ず公式の英訳を使う（後述の辞書を厳守）
+- 字幕として読みやすい長さ（原則1行で収まる長さ）に整える
+- 砕けすぎず、固すぎず、視聴者に語りかける自然な口調
+- 出力は必ず指定された JSON 形式のみ。前置き・解説を一切付けない`;
+
+const REVIEW_SYSTEM = `あなたは将棋の英語字幕の校閲者です。日本語原文と英訳のペアを見て、誤訳・不自然な箇所・将棋用語の誤用を指摘します。
+
+ルール:
+- 致命的な誤訳や用語の誤用があるときだけ短い警告文（日本語）を出す
+- 軽微な揺れ（言い回し違い等）はスルーする
+- 問題なしのときは "ok"
+- 出力は必ず指定された JSON 形式のみ`;
+
+function chunk<T>(arr: T[], n: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n));
+  return out;
+}
+
+async function translateBatch(
+  batch: InputSegment[]
+): Promise<{ index: number; en: string }[]> {
+  const anthropic = getAnthropic();
+  const allHints = buildTranslationHints(batch.map((b) => b.jp).join("\n"));
+
+  const userContent = `次の日本語セリフを英訳してください。各セリフを1行ずつ、JSONで返してください。
+
+入力（JSON 配列）:
+${JSON.stringify(
+  batch.map((b) => ({ index: b.index, jp: b.jp })),
+  null,
+  2
+)}
+
+出力フォーマット（厳守）:
+{"translations":[{"index":0,"en":"..."},{"index":1,"en":"..."}]}${allHints.hintBlock}`;
+
+  const res = await anthropic.messages.create({
+    model: MODEL,
+    max_tokens: 4096,
+    system: TRANSLATE_SYSTEM,
+    messages: [{ role: "user", content: userContent }],
+  });
+
+  const text = res.content
+    .filter((b) => b.type === "text")
+    .map((b) => (b as { type: "text"; text: string }).text)
+    .join("");
+  const parsed = extractJson<{ translations: { index: number; en: string }[] }>(text);
+  if (!parsed?.translations) throw new Error(`翻訳結果のパースに失敗: ${text.slice(0, 200)}`);
+  return parsed.translations;
+}
+
+async function reviewBatch(
+  pairs: { index: number; jp: string; en: string }[]
+): Promise<{ index: number; verdict: "ok" | "warn"; note?: string }[]> {
+  const anthropic = getAnthropic();
+
+  const userContent = `次の日本語→英訳ペアを校閲してください。
+
+入力（JSON 配列）:
+${JSON.stringify(pairs, null, 2)}
+
+出力フォーマット（厳守）:
+{"reviews":[{"index":0,"verdict":"ok"},{"index":1,"verdict":"warn","note":"短い指摘文"}]}`;
+
+  const res = await anthropic.messages.create({
+    model: MODEL,
+    max_tokens: 2048,
+    system: REVIEW_SYSTEM,
+    messages: [{ role: "user", content: userContent }],
+  });
+
+  const text = res.content
+    .filter((b) => b.type === "text")
+    .map((b) => (b as { type: "text"; text: string }).text)
+    .join("");
+  const parsed = extractJson<{
+    reviews: { index: number; verdict: "ok" | "warn"; note?: string }[];
+  }>(text);
+  return parsed?.reviews ?? [];
+}
+
+function extractJson<T>(text: string): T | null {
+  // モデルがコードフェンス付きで返した場合に剥がす
+  const cleaned = text
+    .replace(/```json\s*/g, "")
+    .replace(/```\s*/g, "")
+    .trim();
+  try {
+    return JSON.parse(cleaned) as T;
+  } catch {
+    // 最初の { から最後の } までを切り出して再挑戦
+    const start = cleaned.indexOf("{");
+    const end = cleaned.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      try {
+        return JSON.parse(cleaned.slice(start, end + 1)) as T;
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+}
+
+function detectHitTerms(jp: string): { jp: string; en: string }[] {
+  const sorted = [...SHOGI_DICTIONARY].sort((a, b) => b.jp.length - a.jp.length);
+  const hits: { jp: string; en: string }[] = [];
+  const seen = new Set<string>();
+  for (const t of sorted) {
+    if (jp.includes(t.jp) && !seen.has(t.jp)) {
+      hits.push({ jp: t.jp, en: t.en });
+      seen.add(t.jp);
+    }
+  }
+  return hits;
+}
+
+export async function translateAndReview(
+  segments: InputSegment[]
+): Promise<TranslatedSegment[]> {
+  const out: TranslatedSegment[] = segments.map((s) => ({
+    index: s.index,
+    startSec: s.startSec,
+    endSec: s.endSec,
+    jp: s.jp,
+    en: "",
+    hitTerms: detectHitTerms(s.jp),
+  }));
+
+  // 翻訳（10セグメントずつバッチ）
+  for (const batch of chunk(segments, 10)) {
+    const result = await translateBatch(batch);
+    for (const r of result) {
+      const target = out.find((s) => s.index === r.index);
+      if (target) target.en = r.en;
+    }
+  }
+
+  // 二重チェック（同じくバッチ）
+  for (const batch of chunk(out, 10)) {
+    const pairs = batch.map((s) => ({ index: s.index, jp: s.jp, en: s.en }));
+    const reviews = await reviewBatch(pairs);
+    for (const r of reviews) {
+      if (r.verdict === "warn") {
+        const target = out.find((s) => s.index === r.index);
+        if (target) target.warning = r.note ?? "要確認";
+      }
+    }
+  }
+
+  return out;
+}

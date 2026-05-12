@@ -8,18 +8,36 @@
 
 - ✅ **済み**:
   - デザイン方針を受信／設計メモ（このファイル）を作成
-  - **クイック翻訳機能を実装完了**（Next.js 14 + Tailwind + Claude Haiku API、4モード、将棋辞書 100+ 語、スマホ対応）
+  - **クイック翻訳機能を実装完了**（Claude Haiku、4モード、将棋辞書 100+ 語、スマホ対応）→ `/quick`
   - 動画字幕パイプラインの技術選定 → **品質最優先構成で確定**
   - **テロップ追加要件を受信**（2026-05-12、SRTだけでなく動画に乗せる「見やすい英語テロップ」も書き出す）
-- 🟡 **進行中**: 動画字幕＋テロップ機能の実装着手
+  - **動画字幕の基本パイプラインを実装完了**（YouTube URL → Google Speech 書き起こし → Sonnet 翻訳＋二重チェック → 字幕確認・編集 → SRT 出力 → ffmpeg で MP4 焼き込み）→ `/video`
+  - **テロップ スタイル調整UI＋実動画プレビューを実装完了**：
+    - 4種のプリセット（白＋黒フチ／黒帯／黄色＋黒フチ／盤を隠さない小帯）
+    - フォントサイズ・色・太さ・位置・余白・行数・縁取り・帯背景までスライダー/カラピで調整
+    - 確認画面に **実動画プレイヤー＋リアルタイム字幕重ね** を追加（焼き込み後とほぼ同じ見た目で確認可）
+    - **品質警告**（英文長すぎ・行数オーバー・表示時間短すぎ・翻訳要確認）が自動で各セグメントに表示
+  - **テロップ設計プレイグラウンド**（`/telop`）：将棋盤モック背景の上でテロップ設定を試せる単独ページ
+  - **プロジェクトの保存・読み込みを実装完了**：
+    - 編集中は **自動下書き保存**（localStorage、ページを閉じても次回起動時に「続きから開く」が出る）
+    - 「プロジェクトを保存」ボタン → JSONファイル（`.eigo-honyaku.json`）で書き出し
+    - 入口で「保存したプロジェクトファイルを開く」→ jobId が生きていれば動画プレビュー込みで完全復元、消えていれば URL から再生成を促す
+    - 「SRTだけ書き出す」ボタン（焼き込み不要・即ダウンロード、クライアント側で生成）
+    - 動画ファイル消失時は **動画なしモード** に自動切替（編集と SRT 書き出しのみ）
+  - yt-dlp と ffmpeg を winget で導入済み
+  - **`/subtitle` Vercel 対応版を新規実装完了**（2026-05-12）
+    - MP4 を選ぶだけで動く（YouTube DL 不要、ffmpeg バイナリ不要）
+    - ブラウザ内で `ffmpeg.wasm` が音声抽出 → API へ送信 → Vercel Serverless 上で完結
+    - 既存の Speech v2 + Sonnet 4.6 二重チェック + テロップエディタを再利用
+    - 8分以下の動画に限定（同期 API 10MB 上限のため。長尺は次フェーズ）
+    - 出力は **日本語SRT + 英語SRT + テロップJSON の3ファイル**（焼き込みは Phase2）
+    - `npm run build` 通過済み、Vercel 公開準備完了
+- 🟡 **進行中**: GitHub & Vercel 公開作業中
 - 🔜 **次の一歩**:
-  1. Git 初期化＋GitHub リポジトリ作成＋Vercel 連携（公開土台作り）
-  2. 動画アップロード画面（`/subtitle`）
-  3. Google Cloud アカウント設定（はじめさんの手作業）→ 書き起こしAPI連携
-  4. 字幕確認画面（日/英対訳・編集）
-  5. **テロップエディター＋プレビュー**（白文字＋黒フチ／黒帯背景・位置調整・スマホで読める）
-  6. **書き出し2種類**：YouTube 用 SRT ファイル ／ テロッププロジェクトJSON
-  7. 完成後 Vercel に公開
+  1. **はじめさん手作業**: Google Cloud アカウント取得 + サービスアカウント JSON 取得（短い動画なら無料枠内）
+  2. **はじめさん手作業**: Vercel ダッシュボードで環境変数登録（`ANTHROPIC_API_KEY`, `GOOGLE_APPLICATION_CREDENTIALS_JSON`）
+  3. 本番動作確認（5分将棋動画でテスト）
+  4. 長尺対応（10〜30分動画）= Speech v2 batchRecognize + GCS 経由（次フェーズ）
 
 ---
 
@@ -194,8 +212,39 @@
 
 | キー | 用途 | 状態 |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | Claude API | ✅ 設定済 |
-| `GOOGLE_APPLICATION_CREDENTIALS_JSON` | Google Cloud Speech 認証 | 🔜 これから取得 |
+| `ANTHROPIC_API_KEY` | Claude API（クイック翻訳・動画字幕翻訳） | 🔜 `.env.local` に貼り付け |
+| `GOOGLE_APPLICATION_CREDENTIALS_JSON` | Google Cloud Speech 認証（動画字幕の書き起こし） | 🔜 GCP 側でキー取得 |
+
+### 🛠 Google Cloud セットアップ手順（非エンジニア向け・1回だけ）
+
+動画字幕機能を使うには Google Cloud の準備が必要。**5分くらいの作業**。
+
+1. **Google アカウントでログイン**
+   https://console.cloud.google.com/ を開いて Google アカウントでログイン
+2. **プロジェクトを作る**
+   画面上の「プロジェクトの選択」→「新しいプロジェクト」→ 名前は何でも OK（例：`eigo-honyaku`）→ 作成
+3. **Speech-to-Text API を有効化**
+   左メニュー「API とサービス」→「ライブラリ」→ 検索バーに `speech` → 「Cloud Speech-to-Text API」→「有効にする」
+4. **お金の設定（無料枠で十分・カード登録だけ）**
+   左メニュー「お支払い」→「請求先アカウントをリンク」→ クレジットカードを登録
+   ※ Google Speech は **毎月60分まで無料**。5分動画なら12本／月までタダ
+5. **サービスアカウントを作る**
+   左メニュー「IAM と管理」→「サービスアカウント」→「サービスアカウントを作成」
+   名前：`eigo-honyaku-app` → 作成 → ロール「Cloud Speech クライアント」を付与 → 完了
+6. **JSON キーをダウンロード**
+   作ったサービスアカウントを選択 →「キー」タブ →「鍵を追加」→「新しい鍵を作成」→ JSON 形式 → 作成
+   ※ ダウンロードフォルダに JSON ファイルが入る
+7. **`.env.local` に貼り付け**
+   - メモ帳で `C:\Users\shoug\英語翻訳\.env.local` を開く（無ければ新規作成）
+   - ダウンロードした JSON ファイルもメモ帳で開く
+   - JSON の中身を **1行にして** 以下のように書く：
+     ```
+     ANTHROPIC_API_KEY=sk-ant-あなたのキー
+     GOOGLE_APPLICATION_CREDENTIALS_JSON={"type":"service_account",...全部1行...}
+     ```
+   - 改行を取り除く必要は実はないが、わかりやすさのため `{...}` 全体を1行で。改行があってもアプリ側で扱う
+8. **完了**
+   `npm run dev` で起動して http://localhost:3000/video を開く
 
 ### 1時間動画あたりの想定コスト（品質最優先構成）
 - 書き起こし（Google Cloud Speech 強化モデル）: 約 240 円
@@ -216,13 +265,39 @@ npm run dev
 
 ```
 app/
-  layout.tsx                    共通レイアウト
-  page.tsx                      クイック翻訳画面（現トップ）
-  globals.css                   スタイル
-  api/translate/route.ts        翻訳API（Claude を呼ぶ・モード別プロンプト）
+  layout.tsx                          共通レイアウト
+  page.tsx                            トップ（メニュー：動画字幕／クイック翻訳）
+  globals.css                         スタイル
+  quick/page.tsx                      クイック翻訳画面
+  video/page.tsx                      動画字幕画面（YouTube URL → 完成MP4 まで一気通貫）
+  api/
+    translate/route.ts                クイック翻訳API（Claude）
+    video/
+      download/route.ts               YouTube ダウンロード（yt-dlp + ffmpeg）
+      transcribe/route.ts             書き起こし（Google Speech v2）
+      translate/route.ts              翻訳＋誤訳チェック（Sonnet 4.6 ×2）
+      render/route.ts                 SRT 生成 → MP4 焼き込み（ffmpeg）
+      file/route.ts                   完成ファイル（SRT/MP4）のダウンロード
 lib/
-  shogi-dictionary.ts           将棋用語辞書 + 検出関数
+  shogi-dictionary.ts                 将棋用語辞書 + 検出関数
+  video/
+    binaries.ts                       yt-dlp / ffmpeg のパス解決
+    jobs.ts                           ジョブ作業フォルダ管理
+    ytdlp.ts                          YouTube ダウンロード処理
+    speech.ts                         Google Speech v2 呼び出し
+    translate.ts                      翻訳＋校閲パイプライン
+    srt.ts                            SRT 書式変換
+    burn.ts                           ffmpeg 字幕焼き込み
+tmp/video-jobs/<uuid>/               1ジョブごとの一時ファイル置き場（git無視）
 ```
+
+### 動画字幕の処理時間目安（5分動画）
+
+- ダウンロード: 5〜30秒
+- 書き起こし: 10〜30秒
+- 翻訳（一次＋二重チェック）: 30〜60秒
+- 焼き込み: 30〜90秒
+- **合計：おおよそ 1〜3分**
 
 ---
 
