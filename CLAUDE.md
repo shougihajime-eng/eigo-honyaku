@@ -32,12 +32,22 @@
     - 8分以下の動画に限定（同期 API 10MB 上限のため。長尺は次フェーズ）
     - 出力は **日本語SRT + 英語SRT + テロップJSON の3ファイル**（焼き込みは Phase2）
     - `npm run build` 通過済み、Vercel 公開準備完了
-- 🟡 **進行中**: GitHub & Vercel 公開作業中
+- 🟡 **進行中**: なし
 - 🔜 **次の一歩**:
-  1. **はじめさん手作業**: Google Cloud アカウント取得 + サービスアカウント JSON 取得（短い動画なら無料枠内）
-  2. **はじめさん手作業**: Vercel ダッシュボードで環境変数登録（`ANTHROPIC_API_KEY`, `GOOGLE_APPLICATION_CREDENTIALS_JSON`）
-  3. 本番動作確認（5分将棋動画でテスト）
-  4. 長尺対応（10〜30分動画）= Speech v2 batchRecognize + GCS 経由（次フェーズ）
+  1. **本番で短い動画を実際に試す**（5分以内の将棋YouTube動画で `/video` または `/subtitle`）
+  2. テロップ画面（`/telop`）でスマホ表示の見え方を実機で確認
+  3. 長尺対応（10〜30分動画）= Speech v2 batchRecognize + GCS 経由（次フェーズ）
+
+### ✅ 公開完了 (2026-05-12)
+
+- **本番URL**: https://eigo-honyaku.vercel.app
+- **GitHub**: https://github.com/shougihajime-eng/eigo-honyaku
+- **Vercel環境変数**:
+  - `ANTHROPIC_API_KEY`（Production+Preview）✅ 動作確認済
+  - `GOOGLE_APPLICATION_CREDENTIALS_JSON`（Production+Preview）✅ セット済
+  - `GOOGLE_CLOUD_PROJECT`=`shogi-subtitle-jct4k`（Production+Preview）✅ セット済
+  - ※ Vercel CLI の `env add` でstdin経由だと値が空保存される不具合あり。**Vercel REST API の PATCH 経由で更新する**（auth.json のトークンで認証）
+- **動作確認済み**: `/api/translate` 200応答、将棋辞書（居飛車穴熊・角・王手・腰掛け銀など）の英訳適用OK
 
 ---
 
