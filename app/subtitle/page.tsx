@@ -77,8 +77,11 @@ function fmtBytes(b: number): string {
   return `${(b / 1024 / 1024).toFixed(1)}MB`;
 }
 
+type InputMode = "file" | "youtube";
+
 export default function SubtitlePage() {
   const [step, setStep] = useState<Step>("input");
+  const [inputMode, setInputMode] = useState<InputMode>("file");
   const [file, setFile] = useState<File | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [duration, setDuration] = useState(0);
@@ -89,6 +92,9 @@ export default function SubtitlePage() {
   const [error, setError] = useState<string | null>(null);
   const [style, setStyle] = useState<TelopStyle>(DEFAULT_STYLE);
   const [currentTime, setCurrentTime] = useState(0);
+  const [youtubeUrl, setYoutubeUrl] = useState("");
+  const [youtubeVideoId, setYoutubeVideoId] = useState<string | null>(null);
+  const [sourceTitle, setSourceTitle] = useState<string>("");
 
   useEffect(() => {
     if (!file) {
@@ -134,7 +140,8 @@ export default function SubtitlePage() {
   }
 
   async function start() {
-    if (!file) return;
+    if (inputMode === "file" && !file) return;
+    if (inputMode === "youtube" && !youtubeUrl.trim()) return;
     setError(null);
     setSegments([]);
     setTranscriptSegs([]);
@@ -142,27 +149,51 @@ export default function SubtitlePage() {
     setExtractRatio(0);
 
     try {
-      setStep("extracting");
-      const extracted = await extractAudioFromVideo(file, (p: ExtractProgress) => {
-        if (p.ratio !== undefined) setExtractRatio(p.ratio);
-      });
+      if (inputMode === "file" && file) {
+        setYoutubeVideoId(null);
+        setSourceTitle(file.name);
+        setStep("extracting");
+        const extracted = await extractAudioFromVideo(file, (p: ExtractProgress) => {
+          if (p.ratio !== undefined) setExtractRatio(p.ratio);
+        });
 
-      setStep("transcribing");
-      const fd = new FormData();
-      fd.append(
-        "audio",
-        new Blob([new Uint8Array(extracted.audioBytes)], { type: extracted.contentType }),
-        extracted.filename
-      );
-      const r1 = await fetch("/api/subtitle/transcribe", { method: "POST", body: fd });
-      const d1 = await r1.json();
-      if (!r1.ok) throw new Error(d1.error);
-      const transcribed = d1.segments as RawSegment[];
-      if (!transcribed.length) {
-        throw new Error("音声を聞き取れませんでした。動画に音声が入っているか確認してください");
+        setStep("transcribing");
+        const fd = new FormData();
+        fd.append(
+          "audio",
+          new Blob([new Uint8Array(extracted.audioBytes)], { type: extracted.contentType }),
+          extracted.filename
+        );
+        const r1 = await fetch("/api/subtitle/transcribe", { method: "POST", body: fd });
+        const d1 = await r1.json();
+        if (!r1.ok) throw new Error(d1.error);
+        const transcribed = d1.segments as RawSegment[];
+        if (!transcribed.length) {
+          throw new Error("音声を聞き取れませんでした。動画に音声が入っているか確認してください");
+        }
+        setTranscriptSegs(transcribed);
+        setStep("transcript-check");
+      } else {
+        // YouTube モード: サーバーで DL → 文字起こしまで実行
+        setFile(null);
+        setStep("transcribing");
+        const r1 = await fetch("/api/subtitle/youtube", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: youtubeUrl.trim() }),
+        });
+        const d1 = await r1.json();
+        if (!r1.ok) throw new Error(d1.error);
+        const transcribed = d1.segments as RawSegment[];
+        if (!transcribed.length) {
+          throw new Error("音声を聞き取れませんでした。別の動画でお試しください");
+        }
+        setYoutubeVideoId(d1.videoId ?? null);
+        setSourceTitle(d1.title ?? "YouTube 動画");
+        if (typeof d1.durationSec === "number") setDuration(d1.durationSec);
+        setTranscriptSegs(transcribed);
+        setStep("transcript-check");
       }
-      setTranscriptSegs(transcribed);
-      setStep("transcript-check");
     } catch (e) {
       setError(e instanceof Error ? e.message : "エラーが発生しました");
       setStep("input");
@@ -266,14 +297,17 @@ export default function SubtitlePage() {
     setStyle(DEFAULT_STYLE);
     setCurrentTime(0);
     setExtractRatio(0);
+    setYoutubeUrl("");
+    setYoutubeVideoId(null);
+    setSourceTitle("");
   }
 
   function downloadAll() {
-    const baseName = file?.name?.replace(/\.[^.]+$/, "") || "subtitle";
+    const baseName = sourceTitle?.replace(/\.[^.]+$/, "").replace(/[^\w\-]+/g, "_") || "subtitle";
     downloadTextFile(`${baseName}-jp.srt`, buildJapaneseSrt(segments), "text/plain;charset=utf-8");
     downloadTextFile(`${baseName}-en.srt`, buildEnglishSrt(segments), "text/plain;charset=utf-8");
     const project = buildTelopProject({
-      videoTitle: file?.name,
+      videoTitle: sourceTitle || file?.name,
       durationSec: duration,
       style,
       segments,
@@ -313,10 +347,14 @@ export default function SubtitlePage() {
 
       {step === "input" && (
         <InputSection
+          mode={inputMode}
+          onModeChange={setInputMode}
           file={file}
           duration={duration}
           maxDurationSec={MAX_DURATION_SEC}
           onPickFile={onPickFile}
+          youtubeUrl={youtubeUrl}
+          onYoutubeUrlChange={setYoutubeUrl}
           onStart={start}
           onClear={reset}
         />
@@ -340,10 +378,11 @@ export default function SubtitlePage() {
         />
       )}
 
-      {step === "transcript-check" && videoUrl && (
+      {step === "transcript-check" && (videoUrl || youtubeVideoId) && (
         <SubtitleTranscriptCheck
           videoUrl={videoUrl}
-          filename={file?.name ?? ""}
+          youtubeVideoId={youtubeVideoId}
+          filename={sourceTitle}
           segments={transcriptSegs}
           onEditJp={updateTranscriptJp}
           onConfirm={confirmTranscript}
@@ -360,10 +399,11 @@ export default function SubtitlePage() {
         />
       )}
 
-      {step === "review" && file && videoUrl && (
+      {step === "review" && (videoUrl || youtubeVideoId) && (
         <ReviewSection
           videoUrl={videoUrl}
-          filename={file.name}
+          youtubeVideoId={youtubeVideoId}
+          filename={sourceTitle}
           duration={duration}
           segments={segments}
           style={style}
@@ -427,15 +467,41 @@ function Stepper({ step }: { step: Step }) {
 /* ===================== Input Section ===================== */
 
 function InputSection(props: {
+  mode: InputMode;
+  onModeChange: (m: InputMode) => void;
   file: File | null;
   duration: number;
   maxDurationSec: number;
   onPickFile: (f: File | null) => void;
+  youtubeUrl: string;
+  onYoutubeUrlChange: (s: string) => void;
   onStart: () => void;
   onClear: () => void;
 }) {
-  const { file, duration, maxDurationSec, onPickFile, onStart, onClear } = props;
+  const {
+    mode,
+    onModeChange,
+    file,
+    duration,
+    maxDurationSec,
+    onPickFile,
+    youtubeUrl,
+    onYoutubeUrlChange,
+    onStart,
+    onClear,
+  } = props;
   const [dragOver, setDragOver] = useState(false);
+  const canStart = mode === "file" ? !!file : youtubeUrl.trim().length > 0;
+
+  // 入力があった方を自動で「現在のモード」にする
+  function handlePickFile(f: File | null) {
+    if (f) onModeChange("file");
+    onPickFile(f);
+  }
+  function handleUrlChange(s: string) {
+    if (s.trim()) onModeChange("youtube");
+    onYoutubeUrlChange(s);
+  }
 
   return (
     <div className="animate-fade-in flex flex-col gap-4">
@@ -449,7 +515,7 @@ function InputSection(props: {
           e.preventDefault();
           setDragOver(false);
           const f = e.dataTransfer.files?.[0];
-          if (f) onPickFile(f);
+          if (f) handlePickFile(f);
         }}
         className={`flex cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed p-8 text-center transition sm:p-12 ${
           dragOver
@@ -483,31 +549,48 @@ function InputSection(props: {
           type="file"
           accept="video/mp4,video/*"
           className="hidden"
-          onChange={(e) => onPickFile(e.target.files?.[0] ?? null)}
+          onChange={(e) => handlePickFile(e.target.files?.[0] ?? null)}
         />
       </label>
 
+      <div className="flex items-center gap-3 text-[11px] text-zinc-500">
+        <span className="h-px flex-1 bg-white/[0.06]" />
+        または
+        <span className="h-px flex-1 bg-white/[0.06]" />
+      </div>
+
+      <input
+        type="url"
+        inputMode="url"
+        autoComplete="off"
+        spellCheck={false}
+        value={youtubeUrl}
+        onChange={(e) => handleUrlChange(e.target.value)}
+        placeholder="YouTube の URL を貼り付け"
+        className="w-full rounded-xl border border-white/10 bg-white/[0.02] px-4 py-3 text-sm text-zinc-100 outline-none transition focus:border-violet-500/40 focus:bg-white/[0.04]"
+      />
+
       <p className="text-xs text-zinc-500">
-        ※ 今のバージョンは {Math.floor(maxDurationSec / 60)}分以下の動画のみ対応。長い動画は次のバージョンで対応予定です。
+        ※ 今のバージョンは {Math.floor(maxDurationSec / 60)}分以下の動画のみ対応。
       </p>
 
       <div className="flex flex-col gap-2 sm:flex-row">
         <button
-          onClick={props.onStart}
-          disabled={!file}
+          onClick={onStart}
+          disabled={!canStart}
           className="btn-primary flex-1 inline-flex items-center justify-center gap-2 disabled:cursor-not-allowed disabled:opacity-40"
         >
           字幕を作る <Arrow />
         </button>
-        {file && (
+        {(file || youtubeUrl) && (
           <button onClick={onClear} className="btn-secondary">
             選び直す
           </button>
         )}
       </div>
-      {!file && (
+      {!canStart && (
         <p className="text-center text-[11px] text-zinc-500">
-          先に上の枠で動画ファイルを選んでください
+          ファイルを選ぶか、YouTube の URL を入れてください
         </p>
       )}
     </div>
@@ -560,13 +643,15 @@ function ProgressBox({
 
 function SubtitleTranscriptCheck({
   videoUrl,
+  youtubeVideoId,
   filename,
   segments,
   onEditJp,
   onConfirm,
   onCancel,
 }: {
-  videoUrl: string;
+  videoUrl: string | null;
+  youtubeVideoId: string | null;
   filename: string;
   segments: RawSegment[];
   onEditJp: (index: number, jp: string) => void;
@@ -576,6 +661,8 @@ function SubtitleTranscriptCheck({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
   const [now, setNow] = useState(0);
+  const [seekKey, setSeekKey] = useState(0);
+  const [seekSec, setSeekSec] = useState(0);
 
   useEffect(() => {
     const found = segments.find((s) => now >= s.startSec && now < s.endSec);
@@ -583,10 +670,16 @@ function SubtitleTranscriptCheck({
   }, [now, segments, activeIndex]);
 
   function seekTo(sec: number) {
-    const v = videoRef.current;
-    if (!v) return;
-    v.currentTime = sec;
-    v.play().catch(() => {});
+    if (videoRef.current) {
+      videoRef.current.currentTime = sec;
+      videoRef.current.play().catch(() => {});
+      return;
+    }
+    if (youtubeVideoId) {
+      // YouTube iframe を再ロードして該当秒から再生
+      setSeekSec(Math.floor(sec));
+      setSeekKey((k) => k + 1);
+    }
   }
 
   return (
@@ -608,16 +701,32 @@ function SubtitleTranscriptCheck({
           <div className="text-xs text-zinc-500 break-words">{filename}</div>
         )}
         <div className="relative aspect-video w-full overflow-hidden rounded-xl bg-black">
-          <video
-            ref={videoRef}
-            src={videoUrl}
-            controls
-            preload="metadata"
-            playsInline
-            className="absolute inset-0 h-full w-full"
-            onTimeUpdate={(e) => setNow(e.currentTarget.currentTime)}
-          />
+          {videoUrl ? (
+            <video
+              ref={videoRef}
+              src={videoUrl}
+              controls
+              preload="metadata"
+              playsInline
+              className="absolute inset-0 h-full w-full"
+              onTimeUpdate={(e) => setNow(e.currentTarget.currentTime)}
+            />
+          ) : youtubeVideoId ? (
+            <iframe
+              key={seekKey}
+              src={`https://www.youtube.com/embed/${youtubeVideoId}?start=${seekSec}&rel=0&modestbranding=1`}
+              title={filename || "YouTube preview"}
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+              allowFullScreen
+              className="absolute inset-0 h-full w-full"
+            />
+          ) : null}
         </div>
+        {youtubeVideoId && (
+          <p className="text-[11px] text-zinc-500">
+            ※ YouTube プレビューは時間バーが独立しています。タイムスタンプをタップするとその時間から再生し直されます。
+          </p>
+        )}
       </div>
 
       <div className="card overflow-hidden p-0">
@@ -821,7 +930,8 @@ function SubtitleNounCheck({
 /* ===================== Review Section ===================== */
 
 function ReviewSection(props: {
-  videoUrl: string;
+  videoUrl: string | null;
+  youtubeVideoId: string | null;
   filename: string;
   duration: number;
   segments: TelopSegment[];
@@ -835,6 +945,7 @@ function ReviewSection(props: {
 }) {
   const {
     videoUrl,
+    youtubeVideoId,
     filename,
     duration,
     segments,
@@ -850,6 +961,8 @@ function ReviewSection(props: {
   const videoRef = useRef<HTMLVideoElement>(null);
   const previewBoxRef = useRef<HTMLDivElement>(null);
   const [previewWidth, setPreviewWidth] = useState(800);
+  const [seekKey, setSeekKey] = useState(0);
+  const [seekSec, setSeekSec] = useState(0);
 
   useLayoutEffect(() => {
     if (!previewBoxRef.current) return;
@@ -883,12 +996,20 @@ function ReviewSection(props: {
     return m;
   }, [warnings]);
 
-  const seekTo = useCallback((sec: number) => {
-    if (videoRef.current) {
-      videoRef.current.currentTime = sec;
-      videoRef.current.play().catch(() => {});
-    }
-  }, []);
+  const seekTo = useCallback(
+    (sec: number) => {
+      if (videoRef.current) {
+        videoRef.current.currentTime = sec;
+        videoRef.current.play().catch(() => {});
+        return;
+      }
+      if (youtubeVideoId) {
+        setSeekSec(Math.floor(sec));
+        setSeekKey((k) => k + 1);
+      }
+    },
+    [youtubeVideoId]
+  );
 
   return (
     <div className="animate-fade-in flex flex-col gap-5">
@@ -920,30 +1041,45 @@ function ReviewSection(props: {
           ref={previewBoxRef}
           className="relative aspect-video w-full overflow-hidden rounded-2xl border border-white/[0.06] bg-black shadow-[0_20px_60px_-20px_rgba(0,0,0,0.6)]"
         >
-          <video
-            ref={videoRef}
-            src={videoUrl}
-            controls
-            preload="metadata"
-            playsInline
-            className="absolute inset-0 h-full w-full"
-            onTimeUpdate={(e) => onTimeChange(e.currentTarget.currentTime)}
-          />
-          {activeSegment && activeSegment.en && (
-            <TelopRender
-              text={activeSegment.en}
-              style={style}
-              containerWidth={previewWidth}
-              countdownValue={
-                activeSegment.kind === "countdown"
-                  ? activeSegment.countdownValue
-                  : undefined
-              }
+          {videoUrl ? (
+            <>
+              <video
+                ref={videoRef}
+                src={videoUrl}
+                controls
+                preload="metadata"
+                playsInline
+                className="absolute inset-0 h-full w-full"
+                onTimeUpdate={(e) => onTimeChange(e.currentTarget.currentTime)}
+              />
+              {activeSegment && activeSegment.en && (
+                <TelopRender
+                  text={activeSegment.en}
+                  style={style}
+                  containerWidth={previewWidth}
+                  countdownValue={
+                    activeSegment.kind === "countdown"
+                      ? activeSegment.countdownValue
+                      : undefined
+                  }
+                />
+              )}
+            </>
+          ) : youtubeVideoId ? (
+            <iframe
+              key={seekKey}
+              src={`https://www.youtube.com/embed/${youtubeVideoId}?start=${seekSec}&rel=0&modestbranding=1`}
+              title={filename || "YouTube preview"}
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+              allowFullScreen
+              className="absolute inset-0 h-full w-full"
             />
-          )}
+          ) : null}
         </div>
         <p className="mt-2 text-[11px] text-zinc-500">
-          再生中の英語字幕が、動画上にリアルタイムでプレビュー表示されます。
+          {youtubeVideoId
+            ? "YouTube プレビュー。セグメントの時間をタップするとその場面から再生し直されます。"
+            : "再生中の英語字幕が、動画上にリアルタイムでプレビュー表示されます。"}
         </p>
       </div>
 
