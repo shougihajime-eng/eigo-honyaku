@@ -10,11 +10,24 @@
  * - Google Speech v2 は autoDecodingConfig で WEBM_OPUS を受け付ける。
  * - bot 判定回避のため、環境変数 YOUTUBE_COOKIES_JSON に
  *   ログイン済み Cookie の JSON 配列を入れておくと自動で渡される。
+ * - cookies が無くても IOS / TV クライアントとして偽装することで
+ *   多くの場合 bot 判定を回避できる。
  */
 
 import ytdl from "@distube/ytdl-core";
 
 const MAX_DURATION_SEC = 20 * 60; // 安全側で 20 分まで
+
+type PlayerClient = "WEB_EMBEDDED" | "TV" | "IOS" | "ANDROID" | "WEB";
+
+const PLAYER_CLIENTS: PlayerClient[] = (
+  process.env.YOUTUBE_PLAYER_CLIENTS ?? "IOS,TV,ANDROID,WEB"
+)
+  .split(",")
+  .map((s) => s.trim().toUpperCase())
+  .filter((s): s is PlayerClient =>
+    ["WEB_EMBEDDED", "TV", "IOS", "ANDROID", "WEB"].includes(s)
+  );
 
 let cachedAgent: ReturnType<typeof ytdl.createAgent> | undefined;
 
@@ -65,7 +78,10 @@ export async function downloadYouTubeAudio(url: string): Promise<YouTubeAudio> {
   }
 
   const agent = getAgent();
-  const info = await ytdl.getInfo(url, agent ? { agent } : undefined);
+  const info = await ytdl.getInfo(url, {
+    playerClients: PLAYER_CLIENTS,
+    ...(agent ? { agent } : {}),
+  });
   const durationSec = parseInt(info.videoDetails.lengthSeconds || "0", 10);
 
   if (durationSec > 0 && durationSec > MAX_DURATION_SEC) {
@@ -79,6 +95,7 @@ export async function downloadYouTubeAudio(url: string): Promise<YouTubeAudio> {
   const stream = ytdl.downloadFromInfo(info, {
     quality: "lowestaudio",
     filter: "audioonly",
+    playerClients: PLAYER_CLIENTS,
     ...(agent ? { agent } : {}),
   });
 
