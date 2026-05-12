@@ -21,7 +21,7 @@ const MAX_DURATION_SEC = 20 * 60; // 安全側で 20 分まで
 type PlayerClient = "WEB_EMBEDDED" | "TV" | "IOS" | "ANDROID" | "WEB";
 
 const PLAYER_CLIENTS: PlayerClient[] = (
-  process.env.YOUTUBE_PLAYER_CLIENTS ?? "IOS,TV,ANDROID,WEB"
+  process.env.YOUTUBE_PLAYER_CLIENTS ?? "TV,IOS"
 )
   .split(",")
   .map((s) => s.trim().toUpperCase())
@@ -93,16 +93,30 @@ export async function downloadYouTubeAudio(url: string): Promise<YouTubeAudio> {
   }
 
   // audio-only を優先、無ければ audio+video から最小サイズを選ぶ
-  const audioOnly = info.formats.filter((f) => f.hasAudio && !f.hasVideo);
-  const usableFormats = audioOnly.length > 0
-    ? audioOnly
-    : info.formats.filter((f) => f.hasAudio);
+  const audioOnly = info.formats.filter((f) => f.hasAudio && !f.hasVideo && f.url);
+  const audioAny = info.formats.filter((f) => f.hasAudio && f.url);
+  const usableFormats = audioOnly.length > 0 ? audioOnly : audioAny;
   if (usableFormats.length === 0) {
+    const summary = info.formats
+      .slice(0, 6)
+      .map((f) => `${f.itag}:audio=${f.hasAudio}:video=${f.hasVideo}:url=${!!f.url}:cipher=${!!(f as { signatureCipher?: string }).signatureCipher}`)
+      .join(" | ");
     throw new Error(
-      `音声フォーマットが見つかりませんでした（formats=${info.formats.length}）。動画にアクセスできない可能性があります。`
+      `音声フォーマット無し [total=${info.formats.length}, withUrl=0] sample: ${summary}`
     );
   }
-  const chosen = ytdl.chooseFormat(usableFormats, { quality: "lowestaudio" });
+  let chosen;
+  try {
+    chosen = ytdl.chooseFormat(usableFormats, { quality: "lowestaudio" });
+  } catch (e) {
+    const summary = usableFormats
+      .slice(0, 5)
+      .map((f) => `${f.itag}:${f.container}:${f.audioBitrate}kbps`)
+      .join(" | ");
+    throw new Error(
+      `chooseFormat 失敗 [usable=${usableFormats.length}]: ${(e as Error).message} | ${summary}`
+    );
+  }
   const stream = ytdl.downloadFromInfo(info, {
     format: chosen,
     playerClients: PLAYER_CLIENTS,
