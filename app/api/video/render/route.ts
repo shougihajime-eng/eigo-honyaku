@@ -8,7 +8,9 @@ import { isValidTelopStyle } from "@/lib/telop/ass";
 import { DEFAULT_STYLE } from "@/lib/telop/defaults";
 
 export const runtime = "nodejs";
-export const maxDuration = 600;
+// Vercel Hobby プランの上限が 300 秒のため。ローカル ffmpeg 焼き込みは時間がかかるが、
+// もともと Vercel ではバイナリ非対応で動かないため Hobby 上限に合わせる（ローカルでは十分）。
+export const maxDuration = 300;
 
 type EditedSegment = {
   index: number;
