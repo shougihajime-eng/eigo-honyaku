@@ -6,3 +6,11 @@ out
 *.tsbuildinfo
 next-env.d.ts
 tmp/
+
+.vercel
+.claude/
+
+# Google Cloud サービスアカウント JSON キー（絶対に push しない）
+gcp-key.json
+*.gcp-key.json
+service-account*.json
