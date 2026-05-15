@@ -13,7 +13,7 @@ export async function POST(req: NextRequest) {
     }
 
     const { jobId, dir } = createJobDir();
-    const result = await downloadVideoAndAudio(url, dir, { maxDurationSec: 600 });
+    const result = await downloadVideoAndAudio(url, dir, { maxDurationSec: 30 * 60 });
 
     return NextResponse.json({
       jobId,

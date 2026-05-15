@@ -14,3 +14,6 @@ tmp/
 gcp-key.json
 *.gcp-key.json
 service-account*.json
+
+# yt-dlp が作る一時ファイル
+*-player-script.js

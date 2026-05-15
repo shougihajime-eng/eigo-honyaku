@@ -114,8 +114,13 @@
 - 🟡 **進行中**: なし
 - 🔜 **次の一歩**:
   1. **新しい動画で5機能まとめて実機検証**（書き起こし確認→固有名詞確認→翻訳→逆翻訳→辞書学習）
-  2. **本番に反映＆Vercelに Supabase 環境変数を登録**（GitHub に push 済み・要 `NEXT_PUBLIC_SUPABASE_URL` と `NEXT_PUBLIC_SUPABASE_ANON_KEY` をVercelにも追加）
-  3. 1時間級の超長尺対応 = Speech v2 batchRecognize + GCS 経由（次フェーズ）
+  2. 1時間級の超長尺対応 = Speech v2 batchRecognize + GCS 経由（次フェーズ）
+
+### ✅ Supabase 本番連携 完了（2026-05-13 確認）
+
+- Vercel本番に `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` 登録済（Production+Preview）
+- 最新本番デプロイ取り込み済み → `GET /api/dictionary` が `{"entries":[]}` で200応答
+- 辞書学習機能は本番で稼働可能状態。あとは固有名詞確認画面で実際に保存テスト
 
 ### 🗄️ 共有 Supabase 設定（2026-05-12 完了）
 

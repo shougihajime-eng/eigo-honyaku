@@ -11,6 +11,7 @@ import {
 } from "@/lib/shogi-dictionary";
 import { fetchUserDictionary } from "@/lib/dictionary/user-store";
 import { detectCountdownSegments } from "./countdown";
+import { resegmentForReadability } from "./resegment";
 
 export type TranslatedSegment = {
   index: number;
@@ -347,5 +348,6 @@ export async function translateAndReview(
     }
   }
 
-  return out;
+  // 英語として自然な区切りに整え直す（文頭マージ＋文単位分割）
+  return resegmentForReadability(out);
 }
