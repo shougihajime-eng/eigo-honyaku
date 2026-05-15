@@ -15,6 +15,8 @@ import { DEFAULT_STYLE } from "@/lib/telop/defaults";
 import type { TelopSegment, TelopStyle, TelopWarning } from "@/lib/telop/types";
 import type { ExtractedNoun, NounCategory } from "@/lib/video/nouns";
 import type { ShogiTerm } from "@/lib/shogi-dictionary";
+import type { VideoBriefing, BriefingSpeaker } from "@/lib/video/briefing";
+import { EMPTY_BRIEFING } from "@/lib/video/briefing";
 
 type RawSegment = {
   index: number;
@@ -65,7 +67,7 @@ const STEP_LABEL: Record<Step, string> = {
   downloading: "取り込み",
   transcribing: "書き起こし",
   "transcript-check": "書き起こし確認",
-  "noun-check": "固有名詞確認",
+  "noun-check": "動画ぜんたい確認",
   translating: "翻訳",
   review: "確認・編集",
   rendering: "焼き込み",
@@ -96,6 +98,7 @@ export default function VideoPage() {
   const [info, setInfo] = useState<string | null>(null);
   const [nouns, setNouns] = useState<ExtractedNoun[]>([]);
   const [transcriptSegs, setTranscriptSegs] = useState<RawSegment[]>([]);
+  const [briefing, setBriefing] = useState<VideoBriefing | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -123,6 +126,7 @@ export default function VideoPage() {
     setInfo(null);
     setNouns([]);
     setTranscriptSegs([]);
+    setBriefing(null);
     if (!url.trim()) return;
 
     try {
@@ -155,7 +159,7 @@ export default function VideoPage() {
     }
   }
 
-  /** 書き起こし確認 → 保存して固有名詞抽出に進む */
+  /** 書き起こし確認 → 保存 → 固有名詞抽出と動画ぜんたい下調べを並列実行 */
   async function confirmTranscript() {
     if (!jobId) return;
     setError(null);
@@ -169,14 +173,32 @@ export default function VideoPage() {
       if (!r.ok) throw new Error(d.error);
 
       setStep("noun-check");
-      const rn = await fetch("/api/video/extract-nouns", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ jobId }),
-      });
-      const dn = await rn.json();
-      if (!rn.ok) throw new Error(dn.error);
-      setNouns((dn.nouns as ExtractedNoun[]) ?? []);
+      // 固有名詞抽出と動画ぜんたい下調べを並列で取りに行く（待ち時間半減）
+      const [nounsRes, briefRes] = await Promise.allSettled([
+        fetch("/api/video/extract-nouns", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ jobId }),
+        }).then((r) => r.json()),
+        fetch("/api/video/brief", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ jobId }),
+        }).then((r) => r.json()),
+      ]);
+      if (nounsRes.status === "fulfilled" && !nounsRes.value.error) {
+        setNouns((nounsRes.value.nouns as ExtractedNoun[]) ?? []);
+      } else if (nounsRes.status === "fulfilled" && nounsRes.value.error) {
+        throw new Error(nounsRes.value.error);
+      }
+      if (briefRes.status === "fulfilled" && !briefRes.value.error) {
+        setBriefing(
+          (briefRes.value.briefing as VideoBriefing) ?? EMPTY_BRIEFING
+        );
+      } else {
+        // briefing 失敗時は翻訳自体は続行可能なので致命扱いしない
+        setBriefing(EMPTY_BRIEFING);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "エラーが発生しました");
       setStep("transcript-check");
@@ -228,7 +250,7 @@ export default function VideoPage() {
       const r3 = await fetch("/api/video/translate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ jobId, extraTerms }),
+        body: JSON.stringify({ jobId, extraTerms, briefing }),
       });
       const d3 = await r3.json();
       if (!r3.ok) throw new Error(d3.error);
@@ -246,6 +268,10 @@ export default function VideoPage() {
     setNouns((prev) =>
       prev.map((n) => (n.jp === jp ? { ...n, en } : n))
     );
+  }
+
+  function updateBriefing(patch: Partial<VideoBriefing>) {
+    setBriefing((prev) => ({ ...(prev ?? EMPTY_BRIEFING), ...patch }));
   }
 
   function updateEn(index: number, en: string) {
@@ -482,6 +508,8 @@ export default function VideoPage() {
       {step === "noun-check" && (
         <NounCheckSection
           nouns={nouns}
+          briefing={briefing}
+          onBriefingChange={updateBriefing}
           onChange={updateNoun}
           onConfirm={runTranslate}
           onCancel={() => setStep("transcript-check")}
@@ -818,11 +846,15 @@ const NOUN_CAT_ORDER: NounCategory[] = [
 
 function NounCheckSection({
   nouns,
+  briefing,
+  onBriefingChange,
   onChange,
   onConfirm,
   onCancel,
 }: {
   nouns: ExtractedNoun[];
+  briefing: VideoBriefing | null;
+  onBriefingChange: (patch: Partial<VideoBriefing>) => void;
   onChange: (jp: string, en: string) => void;
   onConfirm: () => void;
   onCancel: () => void;
@@ -836,7 +868,10 @@ function NounCheckSection({
   const hasUnknown = unknown.length > 0;
 
   return (
-    <div className="animate-fade-in card flex flex-col gap-5 p-5 sm:p-6">
+    <div className="animate-fade-in flex flex-col gap-5">
+      <BriefingEditor briefing={briefing} onChange={onBriefingChange} />
+
+      <div className="card flex flex-col gap-5 p-5 sm:p-6">
       <div className="flex flex-col gap-1">
         <h2 className="text-lg font-semibold text-white">
           固有名詞を確認してください
@@ -942,7 +977,229 @@ function NounCheckSection({
           この内容で翻訳を開始 →
         </button>
       </div>
+      </div>
     </div>
+  );
+}
+
+/* ===================== Briefing editor ===================== */
+
+const TONE_OPTIONS: { value: string; label: string }[] = [
+  { value: "casual-youtube", label: "気軽なYouTube解説" },
+  { value: "formal-commentary", label: "プロ解説（落ち着き）" },
+  { value: "educational", label: "講座・初心者向け" },
+  { value: "excited", label: "熱戦・盛り上がり" },
+  { value: "calm-analysis", label: "静かな研究・読み筋" },
+];
+
+function BriefingEditor({
+  briefing,
+  onChange,
+}: {
+  briefing: VideoBriefing | null;
+  onChange: (patch: Partial<VideoBriefing>) => void;
+}) {
+  if (briefing === null) {
+    return (
+      <div className="card flex items-center gap-3 p-5">
+        <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/10 border-t-violet-300" />
+        <span className="text-sm text-zinc-300">
+          動画ぜんたいを読み取り中…（30秒ほど）
+        </span>
+      </div>
+    );
+  }
+
+  const b: VideoBriefing = briefing;
+  const openingsStr = b.openings.join("、");
+  const keyTermsStr = b.keyTerms.join("、");
+
+  function updateSpeaker(i: number, patch: Partial<BriefingSpeaker>) {
+    const next = b.speakers.map((s, idx) =>
+      idx === i ? { ...s, ...patch } : s
+    );
+    onChange({ speakers: next });
+  }
+  function removeSpeaker(i: number) {
+    const next = b.speakers.filter((_, idx) => idx !== i);
+    onChange({ speakers: next });
+  }
+  function addSpeaker() {
+    onChange({
+      speakers: [...b.speakers, { jp: "", role: "解説", en: "" }],
+    });
+  }
+
+  return (
+    <section className="card flex flex-col gap-5 p-5 sm:p-6">
+      <div className="flex flex-col gap-1">
+        <div className="flex items-center gap-2">
+          <span className="chip bg-violet-500/[0.16] text-violet-100">
+            🔎 下調べ
+          </span>
+          <h2 className="text-lg font-semibold text-white">
+            動画ぜんたいの読み取り
+          </h2>
+        </div>
+        <p className="text-xs text-zinc-400 leading-relaxed">
+          AI が動画全体を読んで「これは何の動画か」「誰が話しているか」「どんなトーンか」を整理しました。
+          <span className="text-amber-300">
+            ここを直すと、翻訳が動画ぜんたいの文脈に合った訳になります。
+          </span>
+        </p>
+      </div>
+
+      <label className="flex flex-col gap-1.5">
+        <span className="text-[11px] font-medium uppercase tracking-[0.18em] text-zinc-500">
+          主題
+        </span>
+        <input
+          type="text"
+          value={b.topic}
+          onChange={(e) => onChange({ topic: e.target.value })}
+          placeholder="例：藤井名人と渡辺九段の竜王戦第3局を解説"
+          className="field text-base"
+        />
+      </label>
+
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <label className="flex flex-col gap-1.5">
+          <span className="text-[11px] font-medium uppercase tracking-[0.18em] text-zinc-500">
+            棋戦
+          </span>
+          <input
+            type="text"
+            value={b.tournament}
+            onChange={(e) => onChange({ tournament: e.target.value })}
+            placeholder="例：竜王戦・名人戦（無ければ空欄）"
+            className="field text-sm"
+          />
+        </label>
+        <label className="flex flex-col gap-1.5">
+          <span className="text-[11px] font-medium uppercase tracking-[0.18em] text-zinc-500">
+            話し方のトーン
+          </span>
+          <select
+            value={b.tone}
+            onChange={(e) => onChange({ tone: e.target.value })}
+            className="field text-sm"
+          >
+            {TONE_OPTIONS.map((t) => (
+              <option key={t.value} value={t.value}>
+                {t.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center justify-between">
+          <span className="text-[11px] font-medium uppercase tracking-[0.18em] text-zinc-500">
+            登場人物
+          </span>
+          <button
+            onClick={addSpeaker}
+            className="rounded-md border border-white/[0.08] bg-white/[0.03] px-2.5 py-1 text-[11px] text-zinc-300 hover:bg-white/[0.06]"
+          >
+            ＋ 追加
+          </button>
+        </div>
+        {b.speakers.length === 0 ? (
+          <div className="rounded-md border border-white/[0.06] bg-white/[0.02] px-3 py-2 text-xs text-zinc-500">
+            登場人物は検出されませんでした
+          </div>
+        ) : (
+          <ul className="flex flex-col gap-2">
+            {b.speakers.map((s, i) => (
+              <li
+                key={i}
+                className="grid grid-cols-12 gap-2 rounded-md border border-white/[0.06] bg-white/[0.02] px-3 py-2"
+              >
+                <input
+                  value={s.jp}
+                  onChange={(e) => updateSpeaker(i, { jp: e.target.value })}
+                  placeholder="名前（日本語）"
+                  className="col-span-12 sm:col-span-4 rounded border border-white/[0.06] bg-white/[0.02] px-2 py-1 text-sm text-zinc-100 outline-none focus:border-violet-500/40"
+                />
+                <input
+                  value={s.role}
+                  onChange={(e) => updateSpeaker(i, { role: e.target.value })}
+                  placeholder="役割"
+                  className="col-span-7 sm:col-span-3 rounded border border-white/[0.06] bg-white/[0.02] px-2 py-1 text-sm text-zinc-100 outline-none focus:border-violet-500/40"
+                />
+                <input
+                  value={s.en ?? ""}
+                  onChange={(e) => updateSpeaker(i, { en: e.target.value })}
+                  placeholder="英語表記（任意）"
+                  className="col-span-12 sm:col-span-4 rounded border border-white/[0.06] bg-white/[0.02] px-2 py-1 text-sm text-zinc-100 outline-none focus:border-violet-500/40"
+                />
+                <button
+                  onClick={() => removeSpeaker(i)}
+                  className="col-span-5 sm:col-span-1 rounded text-xs text-zinc-500 hover:text-rose-300"
+                  title="削除"
+                >
+                  削除
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      <label className="flex flex-col gap-1.5">
+        <span className="text-[11px] font-medium uppercase tracking-[0.18em] text-zinc-500">
+          扱われている戦法・囲い（カンマや「、」で区切る）
+        </span>
+        <input
+          type="text"
+          value={openingsStr}
+          onChange={(e) =>
+            onChange({
+              openings: e.target.value
+                .split(/[、,]/)
+                .map((s) => s.trim())
+                .filter(Boolean),
+            })
+          }
+          placeholder="例：四間飛車、穴熊、相掛かり"
+          className="field text-sm"
+        />
+      </label>
+
+      <label className="flex flex-col gap-1.5">
+        <span className="text-[11px] font-medium uppercase tracking-[0.18em] text-zinc-500">
+          動画の要約（翻訳AIに渡される）
+        </span>
+        <textarea
+          value={b.summary}
+          onChange={(e) => onChange({ summary: e.target.value })}
+          rows={3}
+          placeholder="動画全体の流れ・狙いを3〜5行で"
+          className="w-full resize-none rounded-md border border-white/[0.06] bg-white/[0.02] px-3 py-2 text-sm leading-relaxed text-zinc-100 outline-none focus:border-violet-500/40"
+        />
+      </label>
+
+      <label className="flex flex-col gap-1.5">
+        <span className="text-[11px] font-medium uppercase tracking-[0.18em] text-zinc-500">
+          特に気をつけるキーワード
+        </span>
+        <input
+          type="text"
+          value={keyTermsStr}
+          onChange={(e) =>
+            onChange({
+              keyTerms: e.target.value
+                .split(/[、,]/)
+                .map((s) => s.trim())
+                .filter(Boolean),
+            })
+          }
+          placeholder="例：腰掛け銀、角換わり、王手"
+          className="field text-sm"
+        />
+      </label>
+    </section>
   );
 }
 

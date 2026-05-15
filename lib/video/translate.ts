@@ -12,6 +12,7 @@ import {
 import { fetchUserDictionary } from "@/lib/dictionary/user-store";
 import { detectCountdownSegments } from "./countdown";
 import { resegmentForReadability } from "./resegment";
+import { buildBriefingBlock, type VideoBriefing } from "./briefing";
 
 export type TranslatedSegment = {
   index: number;
@@ -127,16 +128,18 @@ function chunk<T>(arr: T[], n: number): T[][] {
 
 async function translateBatch(
   batch: InputSegment[],
-  extraTerms: ShogiTerm[]
+  extraTerms: ShogiTerm[],
+  briefing: VideoBriefing | null
 ): Promise<{ index: number; en: string }[]> {
   const anthropic = getAnthropic();
   const allHints = buildTranslationHints(
     batch.map((b) => b.jp).join("\n"),
     extraTerms
   );
+  const briefingBlock = buildBriefingBlock(briefing);
 
   const userContent = `Translate the following Japanese shogi commentary lines into natural, native-sounding English subtitles.
-Read all lines first to understand the flow, then translate each one. Treat them as consecutive moments in the same video.
+Read all lines first to understand the flow, then translate each one. Treat them as consecutive moments in the same video.${briefingBlock}
 
 Input (JSON array of segments):
 ${JSON.stringify(
@@ -166,10 +169,12 @@ Required output format (no preamble, no markdown, JSON only):
 }
 
 async function backTranslateBatch(
-  pairs: { index: number; jp: string; en: string }[]
+  pairs: { index: number; jp: string; en: string }[],
+  briefing: VideoBriefing | null
 ): Promise<{ index: number; back: string; verdict: "ok" | "warn"; note?: string }[]> {
   const anthropic = getAnthropic();
-  const userContent = `次の英訳を日本語に戻し、原文と意味が一致しているか判定してください。
+  const briefingBlock = buildBriefingBlock(briefing);
+  const userContent = `次の英訳を日本語に戻し、原文と意味が一致しているか判定してください。${briefingBlock}
 
 入力（JSON 配列）:
 ${JSON.stringify(pairs, null, 2)}
@@ -201,11 +206,13 @@ ${JSON.stringify(pairs, null, 2)}
 }
 
 async function reviewBatch(
-  pairs: { index: number; jp: string; en: string }[]
+  pairs: { index: number; jp: string; en: string }[],
+  briefing: VideoBriefing | null
 ): Promise<{ index: number; verdict: "ok" | "warn"; note?: string }[]> {
   const anthropic = getAnthropic();
+  const briefingBlock = buildBriefingBlock(briefing);
 
-  const userContent = `次の日本語→英訳ペアを校閲してください。
+  const userContent = `次の日本語→英訳ペアを校閲してください。${briefingBlock}
 
 入力（JSON 配列）:
 ${JSON.stringify(pairs, null, 2)}
@@ -269,7 +276,8 @@ function detectHitTerms(jp: string): { jp: string; en: string }[] {
 
 export async function translateAndReview(
   segments: InputSegment[],
-  extraTerms: ShogiTerm[] = []
+  extraTerms: ShogiTerm[] = [],
+  briefing: VideoBriefing | null = null
 ): Promise<TranslatedSegment[]> {
   // 学習済みユーザー辞書をマージ（同じ jp があれば extraTerms（今回確認済み）を優先）
   const userDict = await fetchUserDictionary();
@@ -313,7 +321,7 @@ export async function translateAndReview(
 
   // 翻訳（10セグメントずつバッチ）
   for (const batch of chunk(translatable, 10)) {
-    const result = await translateBatch(batch, mergedExtraTerms);
+    const result = await translateBatch(batch, mergedExtraTerms, briefing);
     for (const r of result) {
       const target = out.find((s) => s.index === r.index);
       if (target) target.en = r.en;
@@ -324,7 +332,7 @@ export async function translateAndReview(
   const reviewable = out.filter((s) => s.kind !== "countdown" && s.en);
   for (const batch of chunk(reviewable, 10)) {
     const pairs = batch.map((s) => ({ index: s.index, jp: s.jp, en: s.en }));
-    const reviews = await reviewBatch(pairs);
+    const reviews = await reviewBatch(pairs, briefing);
     for (const r of reviews) {
       if (r.verdict === "warn") {
         const target = out.find((s) => s.index === r.index);
@@ -336,7 +344,7 @@ export async function translateAndReview(
   // 逆翻訳チェック（英→日に戻して意味乖離を検出）
   for (const batch of chunk(reviewable, 10)) {
     const pairs = batch.map((s) => ({ index: s.index, jp: s.jp, en: s.en }));
-    const checks = await backTranslateBatch(pairs);
+    const checks = await backTranslateBatch(pairs, briefing);
     for (const c of checks) {
       const target = out.find((s) => s.index === c.index);
       if (!target) continue;
