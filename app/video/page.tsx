@@ -99,6 +99,15 @@ export default function VideoPage() {
   const [nouns, setNouns] = useState<ExtractedNoun[]>([]);
   const [transcriptSegs, setTranscriptSegs] = useState<RawSegment[]>([]);
   const [briefing, setBriefing] = useState<VideoBriefing | null>(null);
+  const [translateProgress, setTranslateProgress] = useState<{
+    translate: { done: number; total: number };
+    review: { done: number; total: number };
+    back: { done: number; total: number };
+  }>({
+    translate: { done: 0, total: 0 },
+    review: { done: 0, total: 0 },
+    back: { done: 0, total: 0 },
+  });
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -247,15 +256,66 @@ export default function VideoPage() {
       }
 
       setStep("translating");
-      const r3 = await fetch("/api/video/translate", {
+      setTranslateProgress({
+        translate: { done: 0, total: 0 },
+        review: { done: 0, total: 0 },
+        back: { done: 0, total: 0 },
+      });
+
+      const r3 = await fetch("/api/video/translate-stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ jobId, extraTerms, briefing }),
       });
-      const d3 = await r3.json();
-      if (!r3.ok) throw new Error(d3.error);
+      if (!r3.ok || !r3.body) {
+        const errText = await r3.text();
+        throw new Error(errText || "翻訳ストリームを開けませんでした");
+      }
 
-      setSegments(d3.segments as TelopSegment[]);
+      const reader = r3.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let finalSegments: TelopSegment[] | null = null;
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          try {
+            const evt = JSON.parse(trimmed);
+            if (evt.type === "phase") {
+              setTranslateProgress((prev) => {
+                const next = { ...prev };
+                if (evt.phase === "translate") {
+                  next.translate = { done: evt.done, total: evt.total };
+                } else if (evt.phase === "review") {
+                  next.review = { done: evt.done, total: evt.total };
+                } else if (evt.phase === "back-translate") {
+                  next.back = { done: evt.done, total: evt.total };
+                }
+                return next;
+              });
+            } else if (evt.type === "partial") {
+              setSegments(evt.segments as TelopSegment[]);
+            } else if (evt.type === "done") {
+              finalSegments = evt.segments as TelopSegment[];
+            } else if (evt.type === "error") {
+              throw new Error(evt.message);
+            }
+          } catch (e) {
+            if (e instanceof SyntaxError) continue; // partial line
+            throw e;
+          }
+        }
+      }
+
+      if (!finalSegments) throw new Error("翻訳結果が返ってきませんでした");
+      setSegments(finalSegments);
       setHasSourceVideo(true);
       setStep("review");
     } catch (e) {
@@ -491,8 +551,11 @@ export default function VideoPage() {
 
       {(step === "downloading" ||
         step === "transcribing" ||
-        step === "translating" ||
         step === "rendering") && <ProcessingState step={step} />}
+
+      {step === "translating" && (
+        <TranslateProgressView progress={translateProgress} />
+      )}
 
       {step === "transcript-check" && jobId && (
         <TranscriptCheckSection
@@ -702,6 +765,86 @@ function ProcessingState({ step }: { step: Step }) {
       <p className="text-center text-xs text-zinc-500">
         5分動画でだいたい1〜3分。閉じずにお待ちください。
       </p>
+    </div>
+  );
+}
+
+/* ===================== Translate progress ===================== */
+
+function TranslateProgressView({
+  progress,
+}: {
+  progress: {
+    translate: { done: number; total: number };
+    review: { done: number; total: number };
+    back: { done: number; total: number };
+  };
+}) {
+  const rows: { label: string; emoji: string; done: number; total: number; color: string }[] = [
+    {
+      label: "翻訳",
+      emoji: "✍️",
+      done: progress.translate.done,
+      total: progress.translate.total,
+      color: "from-violet-500 to-fuchsia-400",
+    },
+    {
+      label: "校閲",
+      emoji: "🔍",
+      done: progress.review.done,
+      total: progress.review.total,
+      color: "from-sky-500 to-cyan-400",
+    },
+    {
+      label: "逆翻訳チェック",
+      emoji: "🔄",
+      done: progress.back.done,
+      total: progress.back.total,
+      color: "from-emerald-500 to-lime-400",
+    },
+  ];
+
+  return (
+    <div className="animate-fade-in card flex flex-col gap-5 px-6 py-8 sm:px-8">
+      <div className="flex items-center gap-3">
+        <div className="relative h-10 w-10">
+          <span className="absolute inset-0 animate-ping rounded-full bg-violet-500/30" />
+          <span className="absolute inset-1 animate-spin rounded-full border-2 border-white/10 border-t-white/80" />
+        </div>
+        <div>
+          <div className="text-base font-medium text-white">英語に翻訳しています</div>
+          <p className="text-xs text-zinc-500">
+            並列処理＋ストリーミング。出来た所からどんどん表示されます。
+          </p>
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-4">
+        {rows.map((r) => {
+          const pct = r.total > 0 ? Math.min(100, (r.done / r.total) * 100) : 0;
+          const isComplete = r.total > 0 && r.done >= r.total;
+          const isActive = r.total > 0 && !isComplete;
+          return (
+            <div key={r.label} className="flex flex-col gap-1.5">
+              <div className="flex items-center justify-between text-xs">
+                <span className={`flex items-center gap-1.5 font-medium ${isActive ? "text-white" : "text-zinc-400"}`}>
+                  <span>{r.emoji}</span>
+                  {r.label}
+                </span>
+                <span className={`tabular-nums ${isComplete ? "text-emerald-300" : "text-zinc-500"}`}>
+                  {isComplete ? "完了" : r.total > 0 ? `${r.done} / ${r.total}` : "待機中…"}
+                </span>
+              </div>
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/[0.04]">
+                <div
+                  className={`h-full rounded-full bg-gradient-to-r ${r.color} transition-all duration-500 ease-out`}
+                  style={{ width: `${pct}%` }}
+                />
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

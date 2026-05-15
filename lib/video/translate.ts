@@ -126,6 +126,43 @@ function chunk<T>(arr: T[], n: number): T[][] {
   return out;
 }
 
+/**
+ * 並列度を絞って Promise を実行（API レート制限対策）
+ */
+async function runWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  const runners = Array.from(
+    { length: Math.min(limit, items.length) || 1 },
+    async () => {
+      while (true) {
+        const i = next++;
+        if (i >= items.length) return;
+        results[i] = await worker(items[i], i);
+      }
+    }
+  );
+  await Promise.all(runners);
+  return results;
+}
+
+const PARALLEL_LIMIT = 4;
+
+export type TranslateProgressEvent =
+  | {
+      type: "phase";
+      phase: "translate" | "review" | "back-translate";
+      done: number;
+      total: number;
+    }
+  | { type: "partial"; segments: TranslatedSegment[] }
+  | { type: "done"; segments: TranslatedSegment[] }
+  | { type: "error"; message: string };
+
 async function translateBatch(
   batch: InputSegment[],
   extraTerms: ShogiTerm[],
@@ -279,6 +316,22 @@ export async function translateAndReview(
   extraTerms: ShogiTerm[] = [],
   briefing: VideoBriefing | null = null
 ): Promise<TranslatedSegment[]> {
+  return translateAndReviewWithProgress(segments, extraTerms, briefing);
+}
+
+/**
+ * 並列バッチ実行＋途中経過コールバックつきの翻訳パイプライン
+ *
+ * - 翻訳・レビュー・逆翻訳バッチを最大 PARALLEL_LIMIT 並列で実行
+ * - onEvent コールバックがあれば各フェーズの進捗をリアルタイム通知
+ * - resegmentation は最後に1回だけ実行
+ */
+export async function translateAndReviewWithProgress(
+  segments: InputSegment[],
+  extraTerms: ShogiTerm[] = [],
+  briefing: VideoBriefing | null = null,
+  onEvent?: (e: TranslateProgressEvent) => void
+): Promise<TranslatedSegment[]> {
   // 学習済みユーザー辞書をマージ（同じ jp があれば extraTerms（今回確認済み）を優先）
   const userDict = await fetchUserDictionary();
   const extraJp = new Set(extraTerms.map((t) => t.jp));
@@ -293,7 +346,6 @@ export async function translateAndReview(
   const out: TranslatedSegment[] = segments.map((s) => {
     const cd = countdownMap.get(s.index);
     if (cd != null) {
-      // 秒読みは翻訳せず、数字をそのままテキストにする
       return {
         index: s.index,
         startSec: s.startSec,
@@ -316,46 +368,117 @@ export async function translateAndReview(
     };
   });
 
-  // 2. 通常セグメントだけを翻訳対象にする
   const translatable = segments.filter((s) => !countdownMap.has(s.index));
+  const translateBatches = chunk(translatable, 10);
 
-  // 翻訳（10セグメントずつバッチ）
-  for (const batch of chunk(translatable, 10)) {
+  // ===== 翻訳フェーズ：並列バッチ実行 =====
+  let translateDone = 0;
+  onEvent?.({
+    type: "phase",
+    phase: "translate",
+    done: 0,
+    total: translateBatches.length,
+  });
+  await runWithConcurrency(translateBatches, PARALLEL_LIMIT, async (batch) => {
     const result = await translateBatch(batch, mergedExtraTerms, briefing);
     for (const r of result) {
       const target = out.find((s) => s.index === r.index);
       if (target) target.en = r.en;
     }
-  }
+    translateDone += 1;
+    onEvent?.({
+      type: "phase",
+      phase: "translate",
+      done: translateDone,
+      total: translateBatches.length,
+    });
+    // 部分結果も流す（UIですぐ見せられる）
+    onEvent?.({ type: "partial", segments: cloneSegments(out) });
+  });
 
-  // 二重チェック（秒読み以外）
+  // ===== レビュー & 逆翻訳：並列で同時実行 =====
   const reviewable = out.filter((s) => s.kind !== "countdown" && s.en);
-  for (const batch of chunk(reviewable, 10)) {
-    const pairs = batch.map((s) => ({ index: s.index, jp: s.jp, en: s.en }));
-    const reviews = await reviewBatch(pairs, briefing);
-    for (const r of reviews) {
-      if (r.verdict === "warn") {
-        const target = out.find((s) => s.index === r.index);
-        if (target) target.warning = r.note ?? "要確認";
-      }
-    }
-  }
+  const checkBatches = chunk(reviewable, 10);
 
-  // 逆翻訳チェック（英→日に戻して意味乖離を検出）
-  for (const batch of chunk(reviewable, 10)) {
-    const pairs = batch.map((s) => ({ index: s.index, jp: s.jp, en: s.en }));
-    const checks = await backTranslateBatch(pairs, briefing);
-    for (const c of checks) {
-      const target = out.find((s) => s.index === c.index);
-      if (!target) continue;
-      target.backJp = c.back;
-      if (c.verdict === "warn") {
-        const note = `逆翻訳ズレ: ${c.note ?? "原文と意味が違う可能性"}`;
-        target.warning = target.warning ? `${target.warning} / ${note}` : note;
-      }
-    }
-  }
+  let reviewDone = 0;
+  let backDone = 0;
+  onEvent?.({
+    type: "phase",
+    phase: "review",
+    done: 0,
+    total: checkBatches.length,
+  });
+  onEvent?.({
+    type: "phase",
+    phase: "back-translate",
+    done: 0,
+    total: checkBatches.length,
+  });
 
-  // 英語として自然な区切りに整え直す（文頭マージ＋文単位分割）
-  return resegmentForReadability(out);
+  const reviewTask = runWithConcurrency(
+    checkBatches,
+    PARALLEL_LIMIT,
+    async (batch) => {
+      const pairs = batch.map((s) => ({
+        index: s.index,
+        jp: s.jp,
+        en: s.en,
+      }));
+      const reviews = await reviewBatch(pairs, briefing);
+      for (const r of reviews) {
+        if (r.verdict === "warn") {
+          const target = out.find((s) => s.index === r.index);
+          if (target) target.warning = r.note ?? "要確認";
+        }
+      }
+      reviewDone += 1;
+      onEvent?.({
+        type: "phase",
+        phase: "review",
+        done: reviewDone,
+        total: checkBatches.length,
+      });
+    }
+  );
+
+  const backTask = runWithConcurrency(
+    checkBatches,
+    PARALLEL_LIMIT,
+    async (batch) => {
+      const pairs = batch.map((s) => ({
+        index: s.index,
+        jp: s.jp,
+        en: s.en,
+      }));
+      const checks = await backTranslateBatch(pairs, briefing);
+      for (const c of checks) {
+        const target = out.find((s) => s.index === c.index);
+        if (!target) continue;
+        target.backJp = c.back;
+        if (c.verdict === "warn") {
+          const note = `逆翻訳ズレ: ${c.note ?? "原文と意味が違う可能性"}`;
+          target.warning = target.warning
+            ? `${target.warning} / ${note}`
+            : note;
+        }
+      }
+      backDone += 1;
+      onEvent?.({
+        type: "phase",
+        phase: "back-translate",
+        done: backDone,
+        total: checkBatches.length,
+      });
+    }
+  );
+
+  await Promise.all([reviewTask, backTask]);
+
+  const finalSegments = resegmentForReadability(out);
+  onEvent?.({ type: "done", segments: finalSegments });
+  return finalSegments;
+}
+
+function cloneSegments(segs: TranslatedSegment[]): TranslatedSegment[] {
+  return segs.map((s) => ({ ...s, hitTerms: [...s.hitTerms] }));
 }
