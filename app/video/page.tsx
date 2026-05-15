@@ -111,6 +111,47 @@ export default function VideoPage() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // 編集履歴（Undo/Redo）。setSegments を直接呼んだ場合は履歴に積まれない。
+  // ユーザー編集は commitEdit / pushHistory を経由する。
+  const historyRef = useRef<TelopSegment[][]>([]);
+  const futureRef = useRef<TelopSegment[][]>([]);
+  const [historyVersion, setHistoryVersion] = useState(0);
+  const bumpHistory = useCallback(() => setHistoryVersion((v) => v + 1), []);
+
+  const pushHistory = useCallback(
+    (snapshot: TelopSegment[]) => {
+      historyRef.current.push(snapshot);
+      if (historyRef.current.length > 100) historyRef.current.shift();
+      futureRef.current = [];
+      bumpHistory();
+    },
+    [bumpHistory]
+  );
+
+  const undo = useCallback(() => {
+    const last = historyRef.current.pop();
+    if (!last) return;
+    setSegments((prev) => {
+      futureRef.current.push(prev);
+      return last;
+    });
+    bumpHistory();
+  }, [bumpHistory]);
+
+  const redo = useCallback(() => {
+    const next = futureRef.current.pop();
+    if (!next) return;
+    setSegments((prev) => {
+      historyRef.current.push(prev);
+      return next;
+    });
+    bumpHistory();
+  }, [bumpHistory]);
+
+  const canUndo = historyRef.current.length > 0;
+  const canRedo = futureRef.current.length > 0;
+  void historyVersion;
+
   useEffect(() => {
     const d = loadDraft();
     if (d) setDraftState(d);
@@ -335,7 +376,42 @@ export default function VideoPage() {
   }
 
   function updateEn(index: number, en: string) {
-    setSegments((prev) => prev.map((s) => (s.index === index ? { ...s, en } : s)));
+    setSegments((prev) => {
+      pushHistory(prev);
+      return prev.map((s) => (s.index === index ? { ...s, en } : s));
+    });
+  }
+
+  function bulkReplace(find: string, replace: string, caseSensitive: boolean) {
+    if (!find) return 0;
+    let count = 0;
+    const flags = caseSensitive ? "g" : "gi";
+    const escapedFind = find.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const re = new RegExp(escapedFind, flags);
+    setSegments((prev) => {
+      pushHistory(prev);
+      return prev.map((s) => {
+        if (!s.en) return s;
+        const newEn = s.en.replace(re, () => {
+          count++;
+          return replace;
+        });
+        return newEn === s.en ? s : { ...s, en: newEn };
+      });
+    });
+    return count;
+  }
+
+  function countMatches(find: string, caseSensitive: boolean): number {
+    if (!find) return 0;
+    const flags = caseSensitive ? "g" : "gi";
+    const escapedFind = find.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const re = new RegExp(escapedFind, flags);
+    return segments.reduce((sum, s) => {
+      if (!s.en) return sum;
+      const matches = s.en.match(re);
+      return sum + (matches ? matches.length : 0);
+    }, 0);
   }
 
   async function render() {
@@ -595,6 +671,12 @@ export default function VideoPage() {
           onReset={reset}
           onSaveProject={downloadProject}
           onSaveSrt={downloadSrt}
+          onUndo={undo}
+          onRedo={redo}
+          canUndo={canUndo}
+          canRedo={canRedo}
+          onBulkReplace={bulkReplace}
+          countMatches={countMatches}
         />
       )}
 
@@ -765,6 +847,132 @@ function ProcessingState({ step }: { step: Step }) {
       <p className="text-center text-xs text-zinc-500">
         5分動画でだいたい1〜3分。閉じずにお待ちください。
       </p>
+    </div>
+  );
+}
+
+/* ===================== Find & Replace modal ===================== */
+
+function FindReplaceModal({
+  onClose,
+  onReplace,
+  countMatches,
+}: {
+  onClose: () => void;
+  onReplace: (find: string, replace: string, caseSensitive: boolean) => number;
+  countMatches: (find: string, caseSensitive: boolean) => number;
+}) {
+  const [find, setFind] = useState("");
+  const [replace, setReplace] = useState("");
+  const [caseSensitive, setCaseSensitive] = useState(false);
+  const findInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    findInputRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const matchCount = useMemo(
+    () => countMatches(find, caseSensitive),
+    [find, caseSensitive, countMatches]
+  );
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 px-4 pt-24 backdrop-blur-sm"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="card w-full max-w-md p-5 sm:p-6 animate-fade-in">
+        <div className="mb-4 flex items-center justify-between">
+          <h3 className="text-base font-semibold text-white">検索・一括置換</h3>
+          <button
+            onClick={onClose}
+            className="text-zinc-400 hover:text-white"
+            aria-label="閉じる"
+          >
+            ✕
+          </button>
+        </div>
+
+        <div className="flex flex-col gap-3">
+          <label className="flex flex-col gap-1">
+            <span className="text-[10px] font-medium uppercase tracking-[0.18em] text-zinc-500">
+              検索する英語
+            </span>
+            <input
+              ref={findInputRef}
+              type="text"
+              value={find}
+              onChange={(e) => setFind(e.target.value)}
+              placeholder="例：Suzuki Hajime"
+              className="field text-sm"
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-[10px] font-medium uppercase tracking-[0.18em] text-zinc-500">
+              置き換える英語
+            </span>
+            <input
+              type="text"
+              value={replace}
+              onChange={(e) => setReplace(e.target.value)}
+              placeholder="例：Hajime Suzuki"
+              className="field text-sm"
+            />
+          </label>
+          <label className="flex items-center gap-2 text-xs text-zinc-300">
+            <input
+              type="checkbox"
+              checked={caseSensitive}
+              onChange={(e) => setCaseSensitive(e.target.checked)}
+              className="h-4 w-4 rounded border-white/20 bg-white/[0.04]"
+            />
+            大文字・小文字を区別する
+          </label>
+
+          <div className="rounded-md border border-white/[0.06] bg-white/[0.02] px-3 py-2 text-xs text-zinc-400">
+            {find ? (
+              matchCount > 0 ? (
+                <span>
+                  <span className="font-semibold text-violet-300">{matchCount}</span> 件マッチします
+                </span>
+              ) : (
+                <span className="text-zinc-500">マッチなし</span>
+              )
+            ) : (
+              <span className="text-zinc-500">検索する英語を入力してください</span>
+            )}
+          </div>
+
+          <div className="mt-1 flex justify-end gap-2">
+            <button
+              onClick={onClose}
+              className="rounded-md border border-white/[0.06] bg-white/[0.02] px-4 py-1.5 text-sm text-zinc-300 hover:bg-white/[0.06]"
+            >
+              キャンセル
+            </button>
+            <button
+              onClick={() => {
+                const n = onReplace(find, replace, caseSensitive);
+                if (n > 0) onClose();
+              }}
+              disabled={!find || matchCount === 0}
+              className="btn-primary rounded-md px-4 py-1.5 text-sm disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              全部置き換える
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1407,6 +1615,16 @@ function ReviewSection(props: {
   onReset: () => void;
   onSaveProject: () => void;
   onSaveSrt: () => void;
+  onUndo: () => void;
+  onRedo: () => void;
+  canUndo: boolean;
+  canRedo: boolean;
+  onBulkReplace: (
+    find: string,
+    replace: string,
+    caseSensitive: boolean
+  ) => number;
+  countMatches: (find: string, caseSensitive: boolean) => number;
 }) {
   const {
     jobId,
@@ -1423,11 +1641,30 @@ function ReviewSection(props: {
     onReset,
     onSaveProject,
     onSaveSrt,
+    onUndo,
+    onRedo,
+    canUndo,
+    canRedo,
+    onBulkReplace,
+    countMatches,
   } = props;
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const previewBoxRef = useRef<HTMLDivElement>(null);
   const [previewWidth, setPreviewWidth] = useState(800);
+  const [findReplaceOpen, setFindReplaceOpen] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showToast = useCallback((msg: string) => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    setToast(msg);
+    toastTimerRef.current = setTimeout(() => setToast(null), 2200);
+  }, []);
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    };
+  }, []);
 
   useLayoutEffect(() => {
     if (!previewBoxRef.current) return;
@@ -1468,10 +1705,156 @@ function ReviewSection(props: {
     }
   }, []);
 
+  const togglePlay = useCallback(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (v.paused) v.play().catch(() => {});
+    else v.pause();
+  }, []);
+
+  const stepSegment = useCallback(
+    (dir: 1 | -1) => {
+      if (segments.length === 0) return;
+      const cur = segments.findIndex(
+        (s) => currentTime >= s.startSec && currentTime <= s.endSec
+      );
+      let next: number;
+      if (cur < 0) {
+        next = dir > 0 ? 0 : segments.length - 1;
+      } else {
+        next = Math.max(0, Math.min(segments.length - 1, cur + dir));
+      }
+      seekTo(segments[next].startSec);
+    },
+    [segments, currentTime, seekTo]
+  );
+
+  // ===== キーボードショートカット =====
+  useEffect(() => {
+    function isEditing(target: EventTarget | null): boolean {
+      if (!(target instanceof HTMLElement)) return false;
+      const tag = target.tagName.toLowerCase();
+      return (
+        tag === "input" ||
+        tag === "textarea" ||
+        tag === "select" ||
+        target.isContentEditable
+      );
+    }
+    function onKey(e: KeyboardEvent) {
+      const mod = e.metaKey || e.ctrlKey;
+      // Undo/Redo は編集中でも効かせる（テキストの自然な undo はブラウザ既定だが、
+      // ここはセグメント全体の取消を優先したいので明示的に上書き）
+      if (mod && (e.key === "z" || e.key === "Z")) {
+        if (e.shiftKey) {
+          e.preventDefault();
+          onRedo();
+          showToast("やり直しました");
+        } else {
+          e.preventDefault();
+          onUndo();
+          showToast("ひとつ前に戻しました");
+        }
+        return;
+      }
+      if (mod && (e.key === "y" || e.key === "Y")) {
+        e.preventDefault();
+        onRedo();
+        showToast("やり直しました");
+        return;
+      }
+      if (mod && (e.key === "f" || e.key === "F")) {
+        e.preventDefault();
+        setFindReplaceOpen(true);
+        return;
+      }
+      // 編集中（input/textarea）はここから先のキーは介入しない
+      if (isEditing(e.target)) return;
+      if (e.key === " " || e.code === "Space") {
+        e.preventDefault();
+        togglePlay();
+      } else if (e.key === "k" || e.key === "K") {
+        e.preventDefault();
+        togglePlay();
+      } else if (e.key === "j" || e.key === "J") {
+        e.preventDefault();
+        stepSegment(-1);
+      } else if (e.key === "l" || e.key === "L") {
+        e.preventDefault();
+        stepSegment(1);
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        stepSegment(-1);
+      } else if (e.key === "ArrowDown") {
+        e.preventDefault();
+        stepSegment(1);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onUndo, onRedo, togglePlay, stepSegment, showToast]);
+
   const previewSegment = hasSourceVideo ? activeSegment : segments[0] ?? null;
 
   return (
     <div className="animate-fade-in flex flex-col gap-5">
+      {/* Toolbar: Undo / Redo / Find&Replace + keyboard hint */}
+      <div className="card flex flex-wrap items-center gap-2 px-3 py-2 sm:px-4">
+        <button
+          onClick={() => {
+            onUndo();
+            showToast("ひとつ前に戻しました");
+          }}
+          disabled={!canUndo}
+          title="取り消し (Ctrl/Cmd + Z)"
+          className="rounded-md border border-white/[0.06] bg-white/[0.02] px-3 py-1.5 text-xs text-zinc-200 transition hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-30"
+        >
+          ↶ 取消
+        </button>
+        <button
+          onClick={() => {
+            onRedo();
+            showToast("やり直しました");
+          }}
+          disabled={!canRedo}
+          title="やり直し (Ctrl/Cmd + Shift + Z)"
+          className="rounded-md border border-white/[0.06] bg-white/[0.02] px-3 py-1.5 text-xs text-zinc-200 transition hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-30"
+        >
+          ↷ やり直し
+        </button>
+        <span className="h-4 w-px bg-white/10" />
+        <button
+          onClick={() => setFindReplaceOpen(true)}
+          title="検索＆一括置換 (Ctrl/Cmd + F)"
+          className="rounded-md border border-white/[0.06] bg-white/[0.02] px-3 py-1.5 text-xs text-zinc-200 transition hover:bg-white/[0.06]"
+        >
+          🔎 検索・置換
+        </button>
+        <div className="ml-auto hidden text-[10px] text-zinc-500 sm:block">
+          スペース=再生 / J,L=前後 / ↑↓=セグメント / Ctrl+Z=取消 / Ctrl+F=置換
+        </div>
+      </div>
+
+      {/* Toast */}
+      {toast && (
+        <div className="pointer-events-none fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-full bg-emerald-500/95 px-4 py-2 text-xs font-medium text-emerald-950 shadow-lg shadow-emerald-500/30 animate-fade">
+          {toast}
+        </div>
+      )}
+
+      {/* Find & Replace */}
+      {findReplaceOpen && (
+        <FindReplaceModal
+          onClose={() => setFindReplaceOpen(false)}
+          onReplace={(f, r, cs) => {
+            const n = onBulkReplace(f, r, cs);
+            showToast(n > 0 ? `${n}件 置換しました` : "見つかりませんでした");
+            return n;
+          }}
+          countMatches={countMatches}
+        />
+      )}
+
       {/* Meta strip */}
       <div className="card flex flex-wrap items-center gap-x-6 gap-y-2 p-4 sm:p-5">
         <div className="min-w-0 flex-1">
