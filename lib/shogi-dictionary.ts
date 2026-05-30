@@ -171,3 +171,98 @@ export function buildTranslationHints(
   const hintBlock = `\n\n以下の将棋用語・固有名詞は必ずこの英訳を用いること（他の訳語を使わない・推測変換禁止）：\n${lines}`;
   return { hints: found, hintBlock };
 }
+
+/**
+ * 逆向き（英語→日本語）用のヒント。
+ * 英文中に「将棋用語の英語定訳」が含まれていたら、その日本語訳をAIに教える。
+ *
+ * 英語側はどう訳しても自然になりやすい一方、Anaguma / Mino Castle / Ranging Rook /
+ * Tesuji のような将棋固有語は、AIが標準的な日本語（穴熊・美濃囲い・振り飛車・手筋）に
+ * 戻せないことがある。そこをこのヒントで補強する。
+ *
+ * ただし英語→日本語は誤検出（普通の英単語が将棋用語に化ける）のリスクが高いので、
+ * "King" "Game" "Check" のような一般的すぎる単語は対象から外し、
+ * プロンプト側でも「文脈上明らかに将棋の意味のときだけ」という逃げ道を残す。
+ */
+const REVERSE_SKIP = new Set(
+  [
+    "King",
+    "Rook",
+    "Bishop",
+    "Knight",
+    "Lance",
+    "Pawn",
+    "Check",
+    "Drop",
+    "Promote",
+    "Promotion",
+    "Game",
+    "Attack",
+    "Defense",
+    "Opening",
+    "Endgame",
+    "Middlegame",
+    "Solid",
+    "Thin",
+    "Thick",
+    "Amateur",
+    "Resignation",
+    "Sacrifice",
+    "Good Move",
+    "Bad Move",
+  ].map((s) => s.toLowerCase())
+);
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** "Anaguma (Bear-in-the-Hole)" → "Anaguma" のように、照合用のキー（括弧書きを除く）を作る */
+function reverseMatchKey(en: string): string {
+  return en
+    .replace(/\s*\(.*?\)\s*/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function buildReverseTranslationHints(
+  input: string,
+  extraTerms: ShogiTerm[] = []
+): {
+  hints: ShogiTerm[];
+  hintBlock: string;
+} {
+  const lower = input.toLowerCase();
+  const extraMap = new Map(extraTerms.map((t) => [t.jp, t]));
+  const merged: ShogiTerm[] = [
+    ...extraTerms,
+    ...SHOGI_DICTIONARY.filter((t) => !extraMap.has(t.jp)),
+  ];
+
+  const candidates = merged
+    .map((t) => ({ t, key: reverseMatchKey(t.en) }))
+    .filter((c) => c.key.length >= 3 && !REVERSE_SKIP.has(c.key.toLowerCase()))
+    // 長いキーから先に照合（"Static Rook Anaguma" を "Anaguma" より先に拾う）
+    .sort((a, b) => b.key.length - a.key.length);
+
+  const found: ShogiTerm[] = [];
+  const seenJp = new Set<string>();
+  const seenKey = new Set<string>();
+  for (const { t, key } of candidates) {
+    const lowKey = key.toLowerCase();
+    if (seenKey.has(lowKey)) continue;
+    const re = new RegExp(`\\b${escapeRegExp(lowKey)}\\b`);
+    if (re.test(lower) && !seenJp.has(t.jp)) {
+      found.push(t);
+      seenJp.add(t.jp);
+      seenKey.add(lowKey);
+    }
+  }
+  if (found.length === 0) return { hints: [], hintBlock: "" };
+
+  const lines = found
+    .map((t) => `"${reverseMatchKey(t.en)}" → 「${t.jp}」`)
+    .join("\n");
+  const hintBlock = `\n\n次の将棋用語が英文に出てきた場合は、原則この日本語の定訳を使うこと（文脈上あきらかに将棋の意味でない場合のみ例外）：\n${lines}`;
+  return { hints: found, hintBlock };
+}

@@ -2,6 +2,9 @@ import type { TelopSegment, TelopStyle, TelopWarning } from "./types";
 
 const MIN_DURATION_SEC = 0.8;
 const HARD_MAX_CHARS = 50;
+// 読む速さの上限（半角文字／秒）。これを超えると目で追えない＝速すぎ。
+// 快適は 15 前後、20 で読みづらい、21 超は警告対象。
+const READ_CHARS_PER_SEC_MAX = 21;
 
 export function checkSegment(
   seg: TelopSegment,
@@ -34,6 +37,28 @@ export function checkSegment(
       kind: "too-short-duration",
       message: `表示時間が短すぎます（${dur.toFixed(2)}秒）。読めない可能性があります`,
     });
+  }
+
+  // 読む速さチェック：文字数・行数・表示時間が単独ではOKでも、
+  // 「文字数 ÷ 表示秒数」が速すぎると目で追えない。プロ字幕の肝。
+  // すでに「長すぎ」を出しているセグメントには重ねて出さない（指摘がうるさくなるため）。
+  const alreadyTooLong = out.some(
+    (w) => w.index === seg.index && w.kind === "too-long"
+  );
+  if (
+    dur >= MIN_DURATION_SEC &&
+    en.length > 0 &&
+    seg.kind !== "countdown" &&
+    !alreadyTooLong
+  ) {
+    const cps = visibleLength(en) / dur;
+    if (cps > READ_CHARS_PER_SEC_MAX) {
+      out.push({
+        index: seg.index,
+        kind: "too-fast",
+        message: `読む時間が足りません（約${cps.toFixed(0)}文字/秒・目安は15以下）。もっと短い言い回しにすると読みやすくなります`,
+      });
+    }
   }
 
   if (seg.warning) {

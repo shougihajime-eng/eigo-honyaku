@@ -42,7 +42,7 @@ export type TelopSegment = {
 
 export type TelopWarning = {
   index: number;
-  kind: "too-long" | "too-short-duration" | "translation-warning";
+  kind: "too-long" | "too-short-duration" | "too-fast" | "translation-warning";
   message: string;
 };
 

@@ -37,6 +37,18 @@ type InputSegment = {
 
 const MODEL = "claude-sonnet-4-6";
 
+// 視聴者が無理なく読める速さ（半角文字／秒）。これを基準に各行の文字予算を決める。
+// プロの字幕（Netflix 等）は英語で 15〜17 字/秒が快適、20 超で読みづらい。
+const READ_CHARS_PER_SEC = 15;
+const MIN_CHAR_BUDGET = 14; // 一瞬の短い行でも最低これだけは許す
+const MAX_CHAR_BUDGET = 50; // 1行字幕の上限（quality.ts の HARD_MAX_CHARS と一致）
+
+/** 表示秒数から「読めるテンポに収まる文字数」を求める */
+function charBudgetFor(durationSec: number): number {
+  const raw = Math.floor(Math.max(0, durationSec) * READ_CHARS_PER_SEC);
+  return Math.min(MAX_CHAR_BUDGET, Math.max(MIN_CHAR_BUDGET, raw));
+}
+
 function getAnthropic(): Anthropic {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error("ANTHROPIC_API_KEY が設定されていません。");
@@ -71,6 +83,20 @@ Your audience is overseas shogi fans watching on YouTube. The output is on-scree
 - Sentence-level punctuation only. Don't end every line with a period if the sentence continues into the next segment.
 - Match the speaker's tone: excited commentary stays excited, calm analysis stays calm.
 - Do not add information that isn't in the source. Do not "explain" jokes or context.
+
+# Condense like a pro subtitler (CRITICAL — this is what separates great subs from machine output)
+- Subtitles are NOT a word-for-word transcript. They carry the MEANING, short enough to read in the time on screen.
+- Each input line includes "secondsOnScreen" and "maxChars" — the hard reading budget for that line. NEVER exceed maxChars. A viewer reads only ~15 English characters per second; a wall of text that flashes by is worse than a short, clear line.
+- When the speaker rambles, repeats themselves, or over-explains, compress to the essential point. Keep what matters (moves, names, evaluation, emotion); cut redundancy and padding.
+- Prefer the shortest natural phrasing: "He's winning" > "It appears that he is in a winning position".
+- Preserve ALL hard-accuracy info while condensing (player names, ranks, titles, shogi terms). Never drop a name or title just to save space — cut filler words first.
+- Shorter and clear always beats complete and unreadable.
+
+# Drop fillers and false starts (clean spoken Japanese into clean subtitles)
+- Do NOT translate verbal fillers / hesitation sounds. Treat these as noise and remove them: えー, えーっと, ええと, あのー, あの, そのー, まあ, まぁ, なんか (when used as filler), うーん, んー, こう (as filler), はい (as a verbal tic).
+- Smooth out stammers and self-corrections into ONE clean sentence. If the speaker restarts ("歩を…いや、角を打ちます"), translate only the final intended version ("He drops the bishop").
+- Drop meaningless sentence-end tics (ね, よ, さ, わけです as filler) — render the clean statement instead.
+- Keep real content words: only remove genuine filler that adds no meaning. If なんか / まあ / やっぱり actually carries meaning in context, keep it.
 
 # Determinism
 - Given the same Japanese input, you must produce the same English output every time.
@@ -178,9 +204,19 @@ async function translateBatch(
   const userContent = `Translate the following Japanese shogi commentary lines into natural, native-sounding English subtitles.
 Read all lines first to understand the flow, then translate each one. Treat them as consecutive moments in the same video.${briefingBlock}
 
+Each segment has:
+- "jp": the spoken Japanese (may include fillers and stammers — clean them up).
+- "secondsOnScreen": how long this subtitle is on screen.
+- "maxChars": the HARD reading budget. Your English MUST fit within maxChars so a viewer can actually read it in time. Condense the meaning; never exceed it.
+
 Input (JSON array of segments):
 ${JSON.stringify(
-  batch.map((b) => ({ index: b.index, jp: b.jp })),
+  batch.map((b) => ({
+    index: b.index,
+    jp: b.jp,
+    secondsOnScreen: Number(Math.max(0, b.endSec - b.startSec).toFixed(1)),
+    maxChars: charBudgetFor(b.endSec - b.startSec),
+  })),
   null,
   2
 )}

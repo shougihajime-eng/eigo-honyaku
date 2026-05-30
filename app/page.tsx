@@ -36,8 +36,8 @@ export default function Home() {
         <FeatureCard
           href="/quick"
           eyebrow="クイック"
-          title="テキストを即英訳"
-          description="タイトル・サムネ・概要欄・コメント返信を、将棋専門辞書つきの英訳で一瞬。"
+          title="テキストを即翻訳"
+          description="日本語⇄英語をワンタップで切り替え。タイトル・概要欄・海外コメントを、将棋専門辞書つきで一瞬に。"
           accentDots="from-cyan-500/50 via-sky-500/30 to-transparent"
         />
       </section>
