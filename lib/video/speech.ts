@@ -16,6 +16,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { SHOGI_DICTIONARY } from "@/lib/shogi-dictionary";
+import { fetchUserDictionary } from "@/lib/dictionary/user-store";
 import { findBinary } from "./binaries";
 
 const execFileP = promisify(execFile);
@@ -123,11 +124,46 @@ function parseDuration(s: string | undefined): number {
  * 1チャンクを Google Speech 同期API に送って書き起こす
  * offsetSec は チャンクの開始時刻（元音声における秒数）。タイムスタンプを補正するために使う
  */
+type SpeechPhrase = { value: string; boost: number };
+
+/**
+ * 聞き取りヒント（フレーズアダプテーション）を組み立てる。
+ * - 将棋辞書の用語：boost 15
+ * - 棋士名（辞書の name + 学習済みユーザー辞書）：boost 20（名前の聞き間違いを最優先で防ぐ）
+ * Google Speech v2 の boost は 0〜20 が目安。長すぎ・1文字語は誤検出のもとなので除外。
+ */
+async function buildSpeechPhrases(): Promise<SpeechPhrase[]> {
+  const map = new Map<string, number>();
+  const add = (jp: string, boost: number) => {
+    const v = (jp ?? "").trim();
+    if (v.length < 2 || v.length > 20) return; // 1文字・長すぎは弾く
+    const cur = map.get(v);
+    if (cur == null || boost > cur) map.set(v, boost);
+  };
+
+  for (const t of SHOGI_DICTIONARY) {
+    add(t.jp, t.category === "name" ? 20 : 15);
+  }
+
+  // 学習済みユーザー辞書（過去に確定した固有名詞）。名前は特に高boost。
+  try {
+    const userDict = await fetchUserDictionary();
+    for (const t of userDict) {
+      add(t.jp, t.category === "name" ? 20 : 16);
+    }
+  } catch {
+    // 取得失敗（Supabase未接続など）でも聞き取り自体は続行
+  }
+
+  return Array.from(map, ([value, boost]) => ({ value, boost }));
+}
+
 async function transcribeOneChunk(
   audioPath: string,
   offsetSec: number,
   token: string,
-  projectId: string
+  projectId: string,
+  phrases: SpeechPhrase[]
 ): Promise<Segment[]> {
   const audioBuf = await fs.readFile(audioPath);
   if (audioBuf.length > 10 * 1024 * 1024) {
@@ -135,8 +171,6 @@ async function transcribeOneChunk(
       `内部エラー: 分割後のチャンクが10MBを超えました（${audioBuf.length}B）。CHUNK_SECONDS を短くしてください。`
     );
   }
-
-  const phrases = SHOGI_DICTIONARY.map((t) => ({ value: t.jp, boost: 15 }));
 
   const body = {
     config: {
@@ -261,12 +295,13 @@ async function probeDurationSec(audioPath: string): Promise<number> {
 export async function transcribeJapanese(audioPath: string): Promise<Segment[]> {
   const credsPath = await ensureCredentialsFile();
   const { token, projectId } = await getAccessToken(credsPath);
+  const phrases = await buildSpeechPhrases();
 
   const stat = await fs.stat(audioPath);
   const duration = await probeDurationSec(audioPath);
 
   if (stat.size <= MAX_SYNC_BYTES && duration <= MAX_SYNC_SECONDS) {
-    const segs = await transcribeOneChunk(audioPath, 0, token, projectId);
+    const segs = await transcribeOneChunk(audioPath, 0, token, projectId, phrases);
     return mergeShortSegments(segs.map((s, i) => ({ ...s, index: i })));
   }
 
@@ -280,7 +315,7 @@ export async function transcribeJapanese(audioPath: string): Promise<Segment[]> 
     const all: Segment[] = [];
     for (let i = 0; i < chunks.length; i++) {
       const offset = i * CHUNK_SECONDS;
-      const segs = await transcribeOneChunk(chunks[i], offset, token, projectId);
+      const segs = await transcribeOneChunk(chunks[i], offset, token, projectId, phrases);
       all.push(...segs);
     }
     return mergeShortSegments(all.map((s, i) => ({ ...s, index: i })));

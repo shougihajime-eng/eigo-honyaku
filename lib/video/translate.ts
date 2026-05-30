@@ -34,6 +34,9 @@ type InputSegment = {
   startSec: number;
   endSec: number;
   jp: string;
+  // 盤面フレームから得た指し手の手がかり（任意）。
+  // 「ここ」「この歩」のような曖昧な指示語を正確な指し手に直すために使う。
+  boardHint?: string;
 };
 
 /** 翻訳の向き。ja2en=日本語→英語（既定） / en2ja=英語→日本語 */
@@ -295,7 +298,9 @@ async function translateBatch(
   batch: InputSegment[],
   extraTerms: ShogiTerm[],
   briefing: VideoBriefing | null,
-  direction: Direction
+  direction: Direction,
+  contextBefore: string[] = [],
+  contextAfter: string[] = []
 ): Promise<{ index: number; en: string }[]> {
   const anthropic = getAnthropic();
   const joined = batch.map((b) => b.jp).join("\n");
@@ -305,26 +310,48 @@ async function translateBatch(
       : buildTranslationHints(joined, extraTerms);
   const briefingBlock = buildBriefingBlock(briefing);
 
+  // 前後の行を「文脈」として渡す（同じ動画の続きなので話のつながりが切れないように）。
+  // これらは訳して出力させない＝あくまで流れを掴むための参考。
+  const contextBlock =
+    contextBefore.length === 0 && contextAfter.length === 0
+      ? ""
+      : `\n\nContext from the same video (FOR FLOW ONLY — do NOT translate or output these lines):\n${
+          contextBefore.length ? `Just before:\n${contextBefore.map((t) => `  … ${t}`).join("\n")}\n` : ""
+        }${contextAfter.length ? `Just after:\n${contextAfter.map((t) => `  … ${t}`).join("\n")}` : ""}`;
+
   const inputJson = JSON.stringify(
-    batch.map((b) => ({
-      index: b.index,
-      src: b.jp,
-      secondsOnScreen: Number(Math.max(0, b.endSec - b.startSec).toFixed(1)),
-      maxChars: charBudgetFor(b.endSec - b.startSec, direction),
-    })),
+    batch.map((b) => {
+      const row: Record<string, unknown> = {
+        index: b.index,
+        src: b.jp,
+        secondsOnScreen: Number(Math.max(0, b.endSec - b.startSec).toFixed(1)),
+        maxChars: charBudgetFor(b.endSec - b.startSec, direction),
+      };
+      // 盤面ヒントがあれば添える（曖昧な指示語の解決用）
+      if (b.boardHint && b.boardHint.trim()) row.boardHint = b.boardHint.trim();
+      return row;
+    }),
     null,
     2
   );
 
+  // 盤面ヒントの使い方を説明（ja2en のみ。en2ja では将棋の盤面語は別扱い）
+  const hasBoardHints = batch.some((b) => b.boardHint && b.boardHint.trim());
+  const boardHintNote = hasBoardHints
+    ? direction === "en2ja"
+      ? `\n- "boardHint": その瞬間の盤面から読み取った実際の指し手。「ここ」「この駒」など曖昧な表現は boardHint に従って具体的に訳す。`
+      : `\n- "boardHint": the actual move read from the board at that moment. Use it to resolve vague references like "here" / "this pawn" into the concrete move. Trust boardHint over a literal reading when the speaker is pointing at the board.`
+    : "";
+
   const userContent =
     direction === "en2ja"
       ? `次の英語の将棋解説を、日本の視聴者がYouTubeで一目で読める自然な日本語字幕に訳してください。
-まず全体を読んで流れを理解し、各行を訳します。同じ動画の連続した場面として扱ってください。${briefingBlock}
+まず全体を読んで流れを理解し、各行を訳します。同じ動画の連続した場面として扱ってください。${briefingBlock}${contextBlock}
 
 各セグメントの項目：
 - "src": 話された英語（フィラーや言い直しを含むことがある。きれいにまとめる）。
 - "secondsOnScreen": この字幕が画面に出る秒数。
-- "maxChars": その行の文字数の上限。日本語訳は必ず maxChars 以内に収める。意味を圧縮し、絶対に超えない。
+- "maxChars": その行の文字数の上限。日本語訳は必ず maxChars 以内に収める。意味を圧縮し、絶対に超えない。${boardHintNote}
 
 入力（セグメントの JSON 配列）：
 ${inputJson}
@@ -332,12 +359,12 @@ ${inputJson}
 出力フォーマット（前置き・マークダウン禁止・JSON のみ。"en" に日本語訳を入れる）：
 {"translations":[{"index":0,"en":"…"},{"index":1,"en":"…"}]}${allHints.hintBlock}`
       : `Translate the following Japanese shogi commentary lines into natural, native-sounding English subtitles.
-Read all lines first to understand the flow, then translate each one. Treat them as consecutive moments in the same video.${briefingBlock}
+Read all lines first to understand the flow, then translate each one. Treat them as consecutive moments in the same video.${briefingBlock}${contextBlock}
 
 Each segment has:
 - "src": the spoken Japanese (may include fillers and stammers — clean them up).
 - "secondsOnScreen": how long this subtitle is on screen.
-- "maxChars": the HARD reading budget. Your English MUST fit within maxChars so a viewer can actually read it in time. Condense the meaning; never exceed it.
+- "maxChars": the HARD reading budget. Your English MUST fit within maxChars so a viewer can actually read it in time. Condense the meaning; never exceed it.${boardHintNote}
 
 Input (JSON array of segments):
 ${inputJson}
@@ -577,7 +604,25 @@ export async function translateAndReviewWithProgress(
   });
 
   const translatable = segments.filter((s) => !countdownMap.has(s.index));
-  const translateBatches = chunk(translatable, 10);
+
+  // バッチに分けつつ、前後の数行を「文脈」として添える（境目で話のつながりが切れないように）。
+  const BATCH_SIZE = 10;
+  const CONTEXT_LINES = 2;
+  const translateBatches: {
+    seg: InputSegment[];
+    before: string[];
+    after: string[];
+  }[] = [];
+  for (let i = 0; i < translatable.length; i += BATCH_SIZE) {
+    const seg = translatable.slice(i, i + BATCH_SIZE);
+    const before = translatable
+      .slice(Math.max(0, i - CONTEXT_LINES), i)
+      .map((s) => s.jp);
+    const after = translatable
+      .slice(i + seg.length, i + seg.length + CONTEXT_LINES)
+      .map((s) => s.jp);
+    translateBatches.push({ seg, before, after });
+  }
 
   // ===== 翻訳フェーズ：並列バッチ実行 =====
   let translateDone = 0;
@@ -587,8 +632,15 @@ export async function translateAndReviewWithProgress(
     done: 0,
     total: translateBatches.length,
   });
-  await runWithConcurrency(translateBatches, PARALLEL_LIMIT, async (batch) => {
-    const result = await translateBatch(batch, mergedExtraTerms, briefing, direction);
+  await runWithConcurrency(translateBatches, PARALLEL_LIMIT, async ({ seg, before, after }) => {
+    const result = await translateBatch(
+      seg,
+      mergedExtraTerms,
+      briefing,
+      direction,
+      before,
+      after
+    );
     for (const r of result) {
       const target = out.find((s) => s.index === r.index);
       if (target) target.en = r.en;
@@ -603,6 +655,24 @@ export async function translateAndReviewWithProgress(
     // 部分結果も流す（UIですぐ見せられる）
     onEvent?.({ type: "partial", segments: cloneSegments(out) });
   });
+
+  // ===== 名前の表記ブレを動画全体でそろえる（ja2en・正式名がある時だけ）=====
+  if (direction === "ja2en") {
+    const glossary = [
+      ...mergedExtraTerms
+        .filter((t) => t.category === "name" && t.en)
+        .map((t) => ({ jp: t.jp, en: t.en })),
+      ...(briefing?.speakers ?? [])
+        .filter((s) => s.en && s.en.trim())
+        .map((s) => ({ jp: s.jp, en: s.en as string })),
+    ];
+    try {
+      await enforceNameConsistency(out, glossary);
+      onEvent?.({ type: "partial", segments: cloneSegments(out) });
+    } catch {
+      // 失敗してもそのまま続行
+    }
+  }
 
   // ===== レビュー & 逆翻訳：並列で同時実行 =====
   const reviewable = out.filter((s) => s.kind !== "countdown" && s.en);
@@ -686,10 +756,169 @@ export async function translateAndReviewWithProgress(
   // 日本語ターゲット（en2ja）はそのまま返す。
   const finalSegments =
     direction === "en2ja" ? out.map((s, i) => ({ ...s, index: i })) : resegmentForReadability(out);
+
+  // ===== 速すぎる字幕を自動でさらに短縮（読めるテンポまで詰める）=====
+  try {
+    await tightenTooFast(finalSegments, direction);
+  } catch {
+    // 失敗してもそのまま
+  }
+
   onEvent?.({ type: "done", segments: finalSegments });
   return finalSegments;
 }
 
 function cloneSegments(segs: TranslatedSegment[]): TranslatedSegment[] {
   return segs.map((s) => ({ ...s, hitTerms: [...s.hitTerms] }));
+}
+
+/** 半角=1・全角=2 で見た目の文字数を数える（読む速さの基準） */
+function visibleLength(s: string): number {
+  let len = 0;
+  for (const ch of s) {
+    const code = ch.codePointAt(0) ?? 0;
+    len += code <= 0xff ? 1 : 2;
+  }
+  return len;
+}
+
+const NAME_CONSISTENCY_SYSTEM = `You normalize proper-noun spellings in a set of subtitles that all come from ONE video.
+You are given a canonical glossary (one name per line as "Japanese = CanonicalEnglish") and a list of subtitle lines.
+Your only job: make every person / place / tournament / proper noun match the canonical glossary, and make the SAME name spelled identically across all lines.
+- Do NOT rewrite or rephrase the sentence. Only fix the spelling/romanization of proper nouns.
+- Keep ranks and titles attached (e.g. "Fujii Meijin", not "Fujii").
+- If a line already matches, do not include it.
+- Return ONLY JSON, no preamble: {"fixes":[{"index":0,"en":"corrected line"}]}`;
+
+/**
+ * 名前の表記ブレを動画全体でそろえる（辞書・登場人物の正式表記に統一）。
+ * - ja2en のみ（英語側の人名ローマ字ブレ対策）
+ * - 正式名グロッサリが無いときは何もしない（むやみに書き換えない）
+ */
+async function enforceNameConsistency(
+  out: TranslatedSegment[],
+  glossary: { jp: string; en: string }[]
+): Promise<void> {
+  const names = glossary.filter((g) => g.jp?.trim() && g.en?.trim());
+  const targets = out.filter((s) => s.kind !== "countdown" && s.en.trim());
+  if (names.length === 0 || targets.length === 0) return;
+
+  const glossaryText = names.map((n) => `${n.jp} = ${n.en}`).join("\n");
+  const batches = chunk(targets, 20);
+  const anthropic = getAnthropic();
+
+  await runWithConcurrency(batches, PARALLEL_LIMIT, async (batch) => {
+    const payload = batch.map((s) => ({ index: s.index, en: s.en }));
+    const userContent = `Canonical name glossary (Japanese = CanonicalEnglish):
+${glossaryText}
+
+Subtitle lines (JSON):
+${JSON.stringify(payload, null, 2)}
+
+Fix only proper-noun spellings to match the glossary and to be consistent across lines.
+Return ONLY JSON: {"fixes":[{"index":0,"en":"..."}]}`;
+    let parsed: { fixes?: { index: number; en: string }[] } | null = null;
+    try {
+      const res = await anthropic.messages.create({
+        model: MODEL,
+        max_tokens: 2048,
+        temperature: 0,
+        system: NAME_CONSISTENCY_SYSTEM,
+        messages: [{ role: "user", content: userContent }],
+      });
+      const text = res.content
+        .filter((b) => b.type === "text")
+        .map((b) => (b as { type: "text"; text: string }).text)
+        .join("");
+      parsed = extractJson<{ fixes?: { index: number; en: string }[] }>(text);
+    } catch {
+      return; // 失敗しても元の訳のまま（安全側）
+    }
+    for (const f of parsed?.fixes ?? []) {
+      if (typeof f.index !== "number" || typeof f.en !== "string" || !f.en.trim()) {
+        continue;
+      }
+      const target = out.find((s) => s.index === f.index);
+      if (target) target.en = f.en.trim();
+    }
+  });
+}
+
+const TIGHTEN_SYSTEM_JA2EN = `You shorten English subtitle lines that are too long to read in the time they are on screen.
+- Rewrite each line to fit within its "maxChars", keeping the meaning, tone, and ALL names/ranks/shogi terms.
+- Natural spoken English, no robotic phrasing. Never drop a player's name or title.
+- If a line is already short enough, return it unchanged.
+- Return ONLY JSON: {"tightened":[{"index":0,"text":"shorter line"}]}`;
+
+const TIGHTEN_SYSTEM_EN2JA = `あなたは、表示時間に対して長すぎて読めない日本語字幕を短くする校正者です。
+- 各行を "maxChars" 以内に収まるよう、意味・トーン・人名/段位/将棋用語をすべて保ったまま短くする。
+- 自然な日本語。固有名詞や段位は絶対に落とさない。
+- すでに十分短い行はそのまま返す。
+- 出力は JSON のみ：{"tightened":[{"index":0,"text":"短くした行"}]}`;
+
+/**
+ * 速すぎる字幕（文字数÷表示秒数が大きい）を、意味を保ったまま自動で短縮する。
+ * 警告を出すだけでなく実際に読めるテンポまで詰める追撃パス。
+ */
+async function tightenTooFast(
+  out: TranslatedSegment[],
+  direction: Direction
+): Promise<void> {
+  const perSec = READ_BUDGET[direction].perSec;
+  const tightenAt = perSec * 1.3; // 余裕を見て、目安の1.3倍を超えたら短縮対象
+  const offenders = out.filter((s) => {
+    if (s.kind === "countdown" || !s.en.trim()) return false;
+    const dur = s.endSec - s.startSec;
+    if (dur <= 0) return false;
+    return visibleLength(s.en) / dur > tightenAt;
+  });
+  if (offenders.length === 0) return;
+
+  const batches = chunk(offenders, 15);
+  const anthropic = getAnthropic();
+  const system = direction === "en2ja" ? TIGHTEN_SYSTEM_EN2JA : TIGHTEN_SYSTEM_JA2EN;
+
+  await runWithConcurrency(batches, PARALLEL_LIMIT, async (batch) => {
+    const payload = batch.map((s) => ({
+      index: s.index,
+      text: s.en,
+      maxChars: charBudgetFor(s.endSec - s.startSec, direction),
+    }));
+    let parsed: { tightened?: { index: number; text: string }[] } | null = null;
+    try {
+      const res = await anthropic.messages.create({
+        model: MODEL,
+        max_tokens: 2048,
+        temperature: 0,
+        system,
+        messages: [
+          {
+            role: "user",
+            content: `Shorten each line to fit maxChars (keep meaning + all names/terms).
+入力（JSON）:
+${JSON.stringify(payload, null, 2)}
+
+出力は JSON のみ：{"tightened":[{"index":0,"text":"..."}]}`,
+          },
+        ],
+      });
+      const text = res.content
+        .filter((b) => b.type === "text")
+        .map((b) => (b as { type: "text"; text: string }).text)
+        .join("");
+      parsed = extractJson<{ tightened?: { index: number; text: string }[] }>(text);
+    } catch {
+      return; // 失敗しても元の訳のまま
+    }
+    for (const t of parsed?.tightened ?? []) {
+      if (typeof t.index !== "number" || typeof t.text !== "string" || !t.text.trim()) {
+        continue;
+      }
+      const target = out.find((s) => s.index === t.index);
+      // 短くなった時だけ採用（むやみに長くしない）
+      if (target && visibleLength(t.text) < visibleLength(target.en)) {
+        target.en = t.text.trim();
+      }
+    }
+  });
 }

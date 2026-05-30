@@ -1,11 +1,13 @@
 import { NextRequest } from "next/server";
 import path from "node:path";
 import fs from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { jobDir } from "@/lib/video/jobs";
 import {
   translateAndReviewWithProgress,
   type TranslateProgressEvent,
 } from "@/lib/video/translate";
+import { generateBoardHints } from "@/lib/video/board-hints";
 import type { ShogiTerm } from "@/lib/shogi-dictionary";
 import {
   type VideoBriefing,
@@ -56,6 +58,7 @@ export async function POST(req: NextRequest) {
           startSec: number;
           endSec: number;
           jp: string;
+          boardHint?: string;
         }>;
 
         // briefing：リクエスト優先、無ければ保存済みを読む
@@ -72,6 +75,29 @@ export async function POST(req: NextRequest) {
             if (isVideoBriefing(parsed)) useBriefing = parsed;
           } catch {
             // briefing 無くても続行
+          }
+        }
+
+        // 盤面ヒント：元動画(video.mp4)があれば、指し手の手がかりを抽出して
+        // 各セグメントに添える（「ここ」「この歩」を正確な指し手に直すため）。
+        // 失敗・動画なしでも翻訳は続行する。
+        const videoPath = path.join(dir, "video.mp4");
+        if (existsSync(videoPath)) {
+          try {
+            const { hints } = await generateBoardHints(videoPath, segs, useBriefing);
+            if (hints.size > 0) {
+              for (const s of segs) {
+                const h = hints.get(s.index);
+                if (h) s.boardHint = h;
+              }
+              // ヒント入りで保存し直す（再実行時に再抽出しないで済む）
+              await fs.writeFile(
+                path.join(dir, "segments.json"),
+                JSON.stringify(segs, null, 2)
+              );
+            }
+          } catch (e) {
+            console.warn("[translate-stream] board hints skipped:", e);
           }
         }
 
