@@ -44,24 +44,75 @@ type Step =
   | "translating"
   | "review";
 
-const STEP_ORDER: Step[] = [
-  "input",
-  "extracting",
-  "transcribing",
-  "transcript-check",
-  "noun-check",
-  "translating",
-  "review",
-];
-const STEP_LABEL: Record<Step, string> = {
-  input: "動画を選ぶ",
-  extracting: "音声を取り出し中",
-  transcribing: "日本語の書き起こし中",
-  "transcript-check": "書き起こし確認",
-  "noun-check": "固有名詞確認",
-  translating: "英語に翻訳中",
-  review: "字幕の確認・編集・ダウンロード",
+/** 翻訳の向き。ja2en=日本語動画→英語字幕（既定） / en2ja=英語動画→日本語字幕 */
+type Direction = "ja2en" | "en2ja";
+
+/** 向きごとの言語名・流れ。固有名詞確認ステップは ja2en のみ */
+const DIR_META: Record<
+  Direction,
+  {
+    sourceLang: string; // 動画の話し言葉
+    targetLang: string; // 作る字幕
+    speechLang: "ja" | "en"; // Speech API に渡す
+    title: string;
+    subtitle: string;
+    transcribingLabel: string;
+    translatingLabel: string;
+  }
+> = {
+  ja2en: {
+    sourceLang: "日本語",
+    targetLang: "英語",
+    speechLang: "ja",
+    title: "日本語の動画 → 英語字幕",
+    subtitle: "MP4 を選ぶか YouTube URL を貼るだけ。書き起こし → 英訳 → 字幕ファイルまで自動で。",
+    transcribingLabel: "日本語の書き起こし中",
+    translatingLabel: "英語に翻訳中",
+  },
+  en2ja: {
+    sourceLang: "英語",
+    targetLang: "日本語",
+    speechLang: "en",
+    title: "英語の動画 → 日本語字幕",
+    subtitle: "英語の将棋動画を選ぶだけ。聞き取り → 日本語訳 → 字幕ファイルまで自動で。",
+    transcribingLabel: "英語の聞き取り中",
+    translatingLabel: "日本語に翻訳中",
+  },
 };
+
+/** 向きに応じた進行順（en2ja は固有名詞確認を省く） */
+function stepOrderFor(direction: Direction): Step[] {
+  const base: Step[] = [
+    "input",
+    "extracting",
+    "transcribing",
+    "transcript-check",
+    "noun-check",
+    "translating",
+    "review",
+  ];
+  return direction === "en2ja" ? base.filter((s) => s !== "noun-check") : base;
+}
+
+function stepLabel(s: Step, direction: Direction): string {
+  const m = DIR_META[direction];
+  switch (s) {
+    case "input":
+      return "動画を選ぶ";
+    case "extracting":
+      return "音声を取り出し中";
+    case "transcribing":
+      return m.transcribingLabel;
+    case "transcript-check":
+      return "聞き取り確認";
+    case "noun-check":
+      return "固有名詞確認";
+    case "translating":
+      return m.translatingLabel;
+    case "review":
+      return "字幕の確認・編集・ダウンロード";
+  }
+}
 
 const MAX_DURATION_SEC = 15 * 60;
 
@@ -81,6 +132,7 @@ type InputMode = "file" | "youtube";
 
 export default function SubtitlePage() {
   const [step, setStep] = useState<Step>("input");
+  const [direction, setDirection] = useState<Direction>("ja2en");
   const [inputMode, setInputMode] = useState<InputMode>("file");
   const [file, setFile] = useState<File | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
@@ -164,6 +216,7 @@ export default function SubtitlePage() {
           new Blob([new Uint8Array(extracted.audioBytes)], { type: extracted.contentType }),
           extracted.filename
         );
+        fd.append("lang", DIR_META[direction].speechLang);
         const r1 = await fetch("/api/subtitle/transcribe", { method: "POST", body: fd });
         const d1 = await r1.json();
         if (!r1.ok) throw new Error(d1.error);
@@ -180,7 +233,7 @@ export default function SubtitlePage() {
         const r1 = await fetch("/api/subtitle/youtube", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url: youtubeUrl.trim() }),
+          body: JSON.stringify({ url: youtubeUrl.trim(), lang: DIR_META[direction].speechLang }),
         });
         const d1 = await r1.json();
         if (!r1.ok) throw new Error(d1.error);
@@ -200,9 +253,14 @@ export default function SubtitlePage() {
     }
   }
 
-  /** 書き起こし確認 → 固有名詞抽出に進む */
+  /** 書き起こし確認 → （日本語動画のみ）固有名詞抽出に進む。英語動画はそのまま翻訳へ */
   async function confirmTranscript() {
     setError(null);
+    // 英語→日本語は固有名詞確認を省いて直接翻訳する
+    if (direction === "en2ja") {
+      await runTranslate([]);
+      return;
+    }
     try {
       setStep("noun-check");
       const rn = await fetch("/api/subtitle/extract-nouns", {
@@ -219,45 +277,50 @@ export default function SubtitlePage() {
     }
   }
 
-  /** 固有名詞確認 → 翻訳を実行 */
-  async function runTranslate() {
+  /** 固有名詞確認 → 翻訳を実行（英語→日本語のときは固有名詞なしで直接呼ばれる） */
+  async function runTranslate(forcedTerms?: ShogiTerm[]) {
     setError(null);
+    const fallbackStep: Step = direction === "en2ja" ? "transcript-check" : "noun-check";
     try {
-      const extraTerms: ShogiTerm[] = nouns
-        .filter((n) => n.en && n.en.trim().length > 0)
-        .map((n) => ({
-          jp: n.jp,
-          en: n.en.trim(),
-          category:
-            n.category === "person"
-              ? "name"
-              : n.category === "opening"
-                ? "opening"
-                : ("general" as const),
-        }));
+      const extraTerms: ShogiTerm[] =
+        forcedTerms ??
+        nouns
+          .filter((n) => n.en && n.en.trim().length > 0)
+          .map((n) => ({
+            jp: n.jp,
+            en: n.en.trim(),
+            category:
+              n.category === "person"
+                ? "name"
+                : n.category === "opening"
+                  ? "opening"
+                  : ("general" as const),
+          }));
 
-      // 学習辞書に保存（失敗しても翻訳は進める）
-      try {
-        await fetch("/api/dictionary", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            entries: extraTerms.map((t) => ({
-              jp: t.jp,
-              en: t.en,
-              category: t.category,
-            })),
-          }),
-        });
-      } catch {
-        // noop
+      // 学習辞書に保存（日本語→英語のときだけ。失敗しても翻訳は進める）
+      if (direction === "ja2en" && extraTerms.length > 0) {
+        try {
+          await fetch("/api/dictionary", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              entries: extraTerms.map((t) => ({
+                jp: t.jp,
+                en: t.en,
+                category: t.category,
+              })),
+            }),
+          });
+        } catch {
+          // noop
+        }
       }
 
       setStep("translating");
       const r2 = await fetch("/api/subtitle/translate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ segments: transcriptSegs, extraTerms }),
+        body: JSON.stringify({ segments: transcriptSegs, extraTerms, direction }),
       });
       const d2 = await r2.json();
       if (!r2.ok) throw new Error(d2.error);
@@ -266,7 +329,7 @@ export default function SubtitlePage() {
       setStep("review");
     } catch (e) {
       setError(e instanceof Error ? e.message : "エラーが発生しました");
-      setStep("noun-check");
+      setStep(fallbackStep);
     }
   }
 
@@ -304,8 +367,12 @@ export default function SubtitlePage() {
 
   function downloadAll() {
     const baseName = sourceTitle?.replace(/\.[^.]+$/, "").replace(/[^\w\-]+/g, "_") || "subtitle";
-    downloadTextFile(`${baseName}-jp.srt`, buildJapaneseSrt(segments), "text/plain;charset=utf-8");
-    downloadTextFile(`${baseName}-en.srt`, buildEnglishSrt(segments), "text/plain;charset=utf-8");
+    // buildJapaneseSrt は各セグメントの jp（＝元の話し言葉）、buildEnglishSrt は en（＝作った字幕）を使う。
+    // 向きで言語が入れ替わるので、ファイル名の言語コードも合わせる。
+    const srcCode = direction === "en2ja" ? "en" : "ja";
+    const tgtCode = direction === "en2ja" ? "ja" : "en";
+    downloadTextFile(`${baseName}-${srcCode}.srt`, buildJapaneseSrt(segments), "text/plain;charset=utf-8");
+    downloadTextFile(`${baseName}-${tgtCode}.srt`, buildEnglishSrt(segments), "text/plain;charset=utf-8");
     const project = buildTelopProject({
       videoTitle: sourceTitle || file?.name,
       durationSec: duration,
@@ -333,11 +400,11 @@ export default function SubtitlePage() {
           動画字幕をつくる
         </h1>
         <p className="text-base text-zinc-300 sm:text-lg">
-          MP4 を選ぶか YouTube URL を貼るだけ。書き起こし → 英訳 → 字幕ファイルまで自動で。
+          {DIR_META[direction].subtitle}
         </p>
       </div>
 
-      <Stepper step={step} />
+      <Stepper step={step} direction={direction} />
 
       {error && (
         <div className="animate-fade rounded-xl border border-rose-500/30 bg-rose-500/[0.06] px-4 py-3 text-sm text-rose-200">
@@ -347,6 +414,8 @@ export default function SubtitlePage() {
 
       {step === "input" && (
         <InputSection
+          direction={direction}
+          onDirectionChange={setDirection}
           mode={inputMode}
           onModeChange={setInputMode}
           file={file}
@@ -362,7 +431,7 @@ export default function SubtitlePage() {
 
       {step === "extracting" && (
         <ProgressBox
-          label={STEP_LABEL.extracting + "…"}
+          label={stepLabel("extracting", direction) + "…"}
           ratio={extractRatio}
           hint={`動画の長さと同じくらい時間がかかります（${fmtTime(duration)} の動画なら ${fmtTime(
             Math.max(60, duration)
@@ -372,7 +441,7 @@ export default function SubtitlePage() {
 
       {(step === "transcribing" || step === "translating") && (
         <ProgressBox
-          label={STEP_LABEL[step] + "…"}
+          label={stepLabel(step, direction) + "…"}
           spin
           hint="サーバーで処理中です。1分前後かかります。"
         />
@@ -380,6 +449,7 @@ export default function SubtitlePage() {
 
       {step === "transcript-check" && (videoUrl || youtubeVideoId) && (
         <SubtitleTranscriptCheck
+          direction={direction}
           videoUrl={videoUrl}
           youtubeVideoId={youtubeVideoId}
           filename={sourceTitle}
@@ -401,6 +471,7 @@ export default function SubtitlePage() {
 
       {step === "review" && (videoUrl || youtubeVideoId) && (
         <ReviewSection
+          direction={direction}
           videoUrl={videoUrl}
           youtubeVideoId={youtubeVideoId}
           filename={sourceTitle}
@@ -421,11 +492,12 @@ export default function SubtitlePage() {
 
 /* ===================== Stepper ===================== */
 
-function Stepper({ step }: { step: Step }) {
-  const curIdx = STEP_ORDER.indexOf(step);
+function Stepper({ step, direction }: { step: Step; direction: Direction }) {
+  const order = stepOrderFor(direction);
+  const curIdx = order.indexOf(step);
   return (
     <ol className="-mx-1 flex w-full items-center gap-1.5 overflow-x-auto px-1 pb-1 sm:gap-2">
-      {STEP_ORDER.map((s, i) => {
+      {order.map((s, i) => {
         const sIdx = i;
         const done = sIdx < curIdx;
         const active = sIdx === curIdx;
@@ -447,9 +519,9 @@ function Stepper({ step }: { step: Step }) {
                 active ? "font-medium text-white" : "text-zinc-500"
               }`}
             >
-              {STEP_LABEL[s]}
+              {stepLabel(s, direction)}
             </span>
-            {i < STEP_ORDER.length - 1 && (
+            {i < order.length - 1 && (
               <span
                 aria-hidden
                 className={`mx-1 h-px w-3 transition-colors duration-300 sm:w-6 ${
@@ -467,6 +539,8 @@ function Stepper({ step }: { step: Step }) {
 /* ===================== Input Section ===================== */
 
 function InputSection(props: {
+  direction: Direction;
+  onDirectionChange: (d: Direction) => void;
   mode: InputMode;
   onModeChange: (m: InputMode) => void;
   file: File | null;
@@ -479,6 +553,8 @@ function InputSection(props: {
   onClear: () => void;
 }) {
   const {
+    direction,
+    onDirectionChange,
     mode,
     onModeChange,
     file,
@@ -505,6 +581,50 @@ function InputSection(props: {
 
   return (
     <div className="animate-fade-in flex flex-col gap-4">
+      {/* 向きの切り替え */}
+      <div className="flex flex-col gap-2">
+        <div className="text-[11px] font-medium uppercase tracking-[0.18em] text-zinc-500">
+          つくる字幕を選ぶ
+        </div>
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          {(["ja2en", "en2ja"] as Direction[]).map((d) => {
+            const active = direction === d;
+            const m = DIR_META[d];
+            return (
+              <button
+                key={d}
+                onClick={() => onDirectionChange(d)}
+                className={`flex items-center gap-3 rounded-2xl border px-4 py-3.5 text-left transition-all duration-200 ${
+                  active
+                    ? "border-white/15 bg-white/[0.08] shadow-[0_0_0_1px_rgba(139,92,246,0.3)_inset]"
+                    : "border-white/[0.06] bg-white/[0.02] hover:border-white/10 hover:bg-white/[0.04]"
+                }`}
+              >
+                <span
+                  className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border text-[11px] ${
+                    active
+                      ? "border-violet-400/60 bg-violet-500/20 text-white"
+                      : "border-white/15 text-zinc-500"
+                  }`}
+                >
+                  {active ? "●" : ""}
+                </span>
+                <span>
+                  <span className="flex items-center gap-1.5 text-sm font-semibold text-white">
+                    {m.sourceLang}
+                    <span className="text-violet-300">→</span>
+                    {m.targetLang}
+                  </span>
+                  <span className="mt-0.5 block text-[11px] text-zinc-500">
+                    {d === "ja2en" ? "日本語の動画に英語字幕" : "英語の動画に日本語字幕"}
+                  </span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       <label
         onDragOver={(e) => {
           e.preventDefault();
@@ -642,6 +762,7 @@ function ProgressBox({
 /* ===================== Transcript Check ===================== */
 
 function SubtitleTranscriptCheck({
+  direction,
   videoUrl,
   youtubeVideoId,
   filename,
@@ -650,6 +771,7 @@ function SubtitleTranscriptCheck({
   onConfirm,
   onCancel,
 }: {
+  direction: Direction;
   videoUrl: string | null;
   youtubeVideoId: string | null;
   filename: string;
@@ -658,6 +780,7 @@ function SubtitleTranscriptCheck({
   onConfirm: () => void;
   onCancel: () => void;
 }) {
+  const sourceLang = DIR_META[direction].sourceLang;
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
   const [now, setNow] = useState(0);
@@ -687,10 +810,10 @@ function SubtitleTranscriptCheck({
       <div className="card flex flex-col gap-3 p-5 sm:p-6">
         <div>
           <h2 className="text-lg font-semibold text-white">
-            書き起こしを確認してください
+            聞き取りを確認してください
           </h2>
           <p className="mt-1 text-xs text-zinc-400 leading-relaxed">
-            動画を再生しながら、聞こえた日本語と合っているか確認してください。
+            動画を再生しながら、聞こえた{sourceLang}と合っているか確認してください。
             <span className="text-amber-300">
               ここで直すと、翻訳が一気に正確になります。
             </span>
@@ -930,6 +1053,7 @@ function SubtitleNounCheck({
 /* ===================== Review Section ===================== */
 
 function ReviewSection(props: {
+  direction: Direction;
   videoUrl: string | null;
   youtubeVideoId: string | null;
   filename: string;
@@ -944,6 +1068,7 @@ function ReviewSection(props: {
   onReset: () => void;
 }) {
   const {
+    direction,
     videoUrl,
     youtubeVideoId,
     filename,
@@ -957,6 +1082,8 @@ function ReviewSection(props: {
     onDownloadAll,
     onReset,
   } = props;
+  const sourceLang = DIR_META[direction].sourceLang;
+  const targetLang = DIR_META[direction].targetLang;
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const previewBoxRef = useRef<HTMLDivElement>(null);
@@ -1079,7 +1206,7 @@ function ReviewSection(props: {
         <p className="mt-2 text-[11px] text-zinc-500">
           {youtubeVideoId
             ? "YouTube プレビュー。セグメントの時間をタップするとその場面から再生し直されます。"
-            : "再生中の英語字幕が、動画上にリアルタイムでプレビュー表示されます。"}
+            : `再生中の${targetLang}字幕が、動画上にリアルタイムでプレビュー表示されます。`}
         </p>
       </div>
 
@@ -1120,12 +1247,12 @@ function ReviewSection(props: {
                 </button>
                 <div className="sm:col-span-5">
                   <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-zinc-500 sm:hidden">
-                    日本語
+                    {sourceLang}
                   </div>
                   <div className="mt-1 text-sm leading-relaxed text-zinc-300 sm:mt-0">
                     {highlightTerms(
                       s.jp,
-                      s.hitTerms.map((t) => t.jp)
+                      s.hitTerms.map((t) => (direction === "en2ja" ? t.en : t.jp))
                     )}
                   </div>
                   {s.hitTerms.length > 0 && (
@@ -1135,9 +1262,9 @@ function ReviewSection(props: {
                           key={t.jp}
                           className="rounded-md bg-violet-500/[0.08] px-1.5 py-0.5 text-[10px] text-violet-200"
                         >
-                          {t.jp}
+                          {direction === "en2ja" ? t.en : t.jp}
                           <span className="mx-1 text-violet-400/60">→</span>
-                          {t.en}
+                          {direction === "en2ja" ? t.jp : t.en}
                         </span>
                       ))}
                     </div>
@@ -1145,7 +1272,7 @@ function ReviewSection(props: {
                 </div>
                 <div className="sm:col-span-6">
                   <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-zinc-500 sm:hidden">
-                    英語（編集可）
+                    {targetLang}（編集可）
                   </div>
                   <textarea
                     value={s.en}

@@ -6,6 +6,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import {
   buildTranslationHints,
+  buildReverseTranslationHints,
   SHOGI_DICTIONARY,
   type ShogiTerm,
 } from "@/lib/shogi-dictionary";
@@ -35,18 +36,27 @@ type InputSegment = {
   jp: string;
 };
 
+/** 翻訳の向き。ja2en=日本語→英語（既定） / en2ja=英語→日本語 */
+export type Direction = "ja2en" | "en2ja";
+
 const MODEL = "claude-sonnet-4-6";
 
-// 視聴者が無理なく読める速さ（半角文字／秒）。これを基準に各行の文字予算を決める。
-// プロの字幕（Netflix 等）は英語で 15〜17 字/秒が快適、20 超で読みづらい。
-const READ_CHARS_PER_SEC = 15;
-const MIN_CHAR_BUDGET = 14; // 一瞬の短い行でも最低これだけは許す
-const MAX_CHAR_BUDGET = 50; // 1行字幕の上限（quality.ts の HARD_MAX_CHARS と一致）
+// 視聴者が無理なく読める速さ（文字／秒）。これを基準に各行の文字予算を決める。
+// 英語（半角）はプロ字幕で 15〜17 字/秒が快適、20 超で読みづらい。
+// 日本語（全角）は情報密度が高く、約 7 字/秒・1行20字前後が読みやすい目安。
+const READ_BUDGET: Record<
+  Direction,
+  { perSec: number; min: number; max: number }
+> = {
+  ja2en: { perSec: 15, min: 14, max: 50 },
+  en2ja: { perSec: 7, min: 8, max: 22 },
+};
 
-/** 表示秒数から「読めるテンポに収まる文字数」を求める */
-function charBudgetFor(durationSec: number): number {
-  const raw = Math.floor(Math.max(0, durationSec) * READ_CHARS_PER_SEC);
-  return Math.min(MAX_CHAR_BUDGET, Math.max(MIN_CHAR_BUDGET, raw));
+/** 表示秒数から「読めるテンポに収まる文字数」を求める（向きで基準を変える） */
+function charBudgetFor(durationSec: number, direction: Direction): number {
+  const b = READ_BUDGET[direction];
+  const raw = Math.floor(Math.max(0, durationSec) * b.perSec);
+  return Math.min(b.max, Math.max(b.min, raw));
 }
 
 function getAnthropic(): Anthropic {
@@ -146,6 +156,98 @@ const REVIEW_SYSTEM = `あなたは将棋界専門の英語字幕の校閲者で
 - 警告は短い日本語で具体的に（例："『鈴木肇』は Hajime Suzuki が正"、"機械翻訳調: Now then で始まる"）
 - 出力は必ず指定された JSON 形式のみ`;
 
+// ─────────────────────────────────────────────────────────────
+// 英語 → 日本語（en2ja）用のプロンプト群
+// 英語の将棋動画を、日本の視聴者がYouTubeで一目で読める自然な日本語字幕にする。
+// ─────────────────────────────────────────────────────────────
+const TRANSLATE_SYSTEM_EN2JA = `あなたは将棋YouTube動画の日本語字幕をつくるプロの字幕翻訳者です。
+視聴者は日本の将棋ファンで、画面に出る字幕として読みます。教科書調ではなく、自然な話し言葉のテンポで訳してください。
+
+# 最優先：自然な日本語
+- 日本語ネイティブの解説者が実際に話すような、自然で読みやすい日本語にする。
+- 翻訳調・直訳調は禁止。次のような不自然さを避ける：
+  · 「それは〜である」「〜することができる」の多用
+  · 主語「私は」「彼は」「それは」を英語のように毎回つける（日本語では省くのが自然）
+  · 不要なカタカナ語の乱用（自然な日本語があるならそちらを使う）
+  · 「〜という事実」「〜なのです」の機械的な繰り返し
+- 隣り合う行が同じ言い回しで始まらないよう、文の形に変化をつける。
+- 解説の温度感を保つ：盛り上がっている所は熱く、落ち着いた分析は落ち着いて。
+
+# 正確さの絶対ルール（自然さより優先）
+- 棋士名・人名は推測でいじらない。確信が持てない英語名・ローマ字名は、無理に漢字化せず原文（英語表記）のまま残す。
+- 段位・称号は省略しない（"7-dan" → 「七段」、"Meijin" → 「名人」、"Ryuo" → 「竜王」 など、対応が明確なものは日本語の称号にする）。
+- 将棋用語は日本将棋連盟の定訳どおりの日本語に戻す（提供された対訳ヒントは必ず守る）。
+- 確信のない将棋用語は創作せず、カタカナ表記か原語のまま残す。
+- 原文にない情報を足さない。ジョークや文脈を「説明」しない。
+
+# プロの字幕として圧縮する（重要）
+- 字幕は逐語訳ではなく「意味を、画面に出る時間で読める長さ」にまとめたもの。
+- 各行に "secondsOnScreen" と "maxChars"（その行の文字数上限）が付く。maxChars を絶対に超えない。日本語は1秒に約7文字しか読めない。詰め込んで一瞬で消える字幕は最悪。
+- 話者が冗長・繰り返し・言い直しをしたら、要点に圧縮する。指し手・名前・評価・感情は残し、重複や埋め草は削る。
+- いちばん短く自然な言い回しを選ぶ：「勝勢です」＞「彼は勝っている局面にあるように見えます」。
+- 圧縮しても、人名・段位・称号・将棋用語は必ず残す。先に削るのは埋め草。
+
+# 言い淀み・フィラーを落とす
+- "um", "uh", "you know", "like", "I mean", "well" のような英語のフィラーは訳さず捨てる。
+- 言い直し・自己訂正は最終的に言いたかった一文にまとめる。
+- 意味のある語は残す。本当に意味のないフィラーだけ削る。
+
+# 決定論
+- 同じ英語入力には毎回同じ日本語を返す。
+- 同じ動画内で用語の訳語を揺らさない（辞書の訳語に固定）。
+
+# 出力
+- 指定された JSON のみを返す。前置き・コメント・マークダウン禁止。
+- 人名・固有名詞に確信が持てない場合は、その index の "en"（日本語訳の格納先）を空文字にする。人間が確認する。`;
+
+const REVIEW_SYSTEM_EN2JA = `あなたは将棋界専門の日本語字幕の校閲者です。英語の原文と日本語訳のペアを見て、誤訳・不適切な箇所を指摘します。
+
+【警告を出すべきケース】
+- 棋士名・人名の取り違え、勝手な漢字化（確信なく "Suzuki" を別人の漢字にする等）
+- 段位・称号の脱落や誤訳
+- 将棋用語の誤訳（定訳と違う訳語、創作カタカナ語）
+- 意味が原文と変わっている意訳・情報の欠落
+- 翻訳調・機械翻訳っぽい不自然な日本語：
+  · 「それは〜である」「〜することができる」の連発
+  · 主語「私は/彼は/それは」を英語のように毎回つけている
+  · 不要なカタカナ語の乱用
+  · 同じ語で連続して始まる隣接行
+
+【スルーしてよいケース】
+- 軽微な言い回しの揺れ
+- 自然な日本語にするための主語省略・語順の入れ替え
+- 直訳ではない自然な意訳（情報が抜け落ちていなければ OK）
+
+【出力】
+- 問題なしのときは "ok"
+- 警告は短い日本語で具体的に（例："『Meijin』は名人が正"、"翻訳調: 主語の付けすぎ"）
+- 出力は必ず指定された JSON 形式のみ`;
+
+const BACK_TRANSLATE_SYSTEM_EN2JA = `あなたは将棋界専門の翻訳検証者です。日本語訳を英語に戻し、元の英語原文と意味が一致しているかを確認します。
+
+【目的】
+日本語訳を英語に逆翻訳し、元の英語と比べて、意味のズレや情報の脱落を見つけます。
+逆翻訳はあくまで「日本語訳が原文の意味を保っているかの検証」が目的です。
+
+【判定基準】
+- "ok": 意味は概ね一致。表現の揺れは許容
+- "warn": 重要情報の欠落／意味の変化／棋士名・段位・戦法名の取り違え
+
+【出力】
+- 必ず指定 JSON 形式
+- note は短い日本語で「何がズレているか」
+- back は逆翻訳した英語（できるだけ自然に）`;
+
+function translateSystem(direction: Direction): string {
+  return direction === "en2ja" ? TRANSLATE_SYSTEM_EN2JA : TRANSLATE_SYSTEM;
+}
+function reviewSystem(direction: Direction): string {
+  return direction === "en2ja" ? REVIEW_SYSTEM_EN2JA : REVIEW_SYSTEM;
+}
+function backTranslateSystem(direction: Direction): string {
+  return direction === "en2ja" ? BACK_TRANSLATE_SYSTEM_EN2JA : BACK_TRANSLATE_SYSTEM;
+}
+
 function chunk<T>(arr: T[], n: number): T[][] {
   const out: T[][] = [];
   for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n));
@@ -192,34 +294,53 @@ export type TranslateProgressEvent =
 async function translateBatch(
   batch: InputSegment[],
   extraTerms: ShogiTerm[],
-  briefing: VideoBriefing | null
+  briefing: VideoBriefing | null,
+  direction: Direction
 ): Promise<{ index: number; en: string }[]> {
   const anthropic = getAnthropic();
-  const allHints = buildTranslationHints(
-    batch.map((b) => b.jp).join("\n"),
-    extraTerms
-  );
+  const joined = batch.map((b) => b.jp).join("\n");
+  const allHints =
+    direction === "en2ja"
+      ? buildReverseTranslationHints(joined, extraTerms)
+      : buildTranslationHints(joined, extraTerms);
   const briefingBlock = buildBriefingBlock(briefing);
 
-  const userContent = `Translate the following Japanese shogi commentary lines into natural, native-sounding English subtitles.
+  const inputJson = JSON.stringify(
+    batch.map((b) => ({
+      index: b.index,
+      src: b.jp,
+      secondsOnScreen: Number(Math.max(0, b.endSec - b.startSec).toFixed(1)),
+      maxChars: charBudgetFor(b.endSec - b.startSec, direction),
+    })),
+    null,
+    2
+  );
+
+  const userContent =
+    direction === "en2ja"
+      ? `次の英語の将棋解説を、日本の視聴者がYouTubeで一目で読める自然な日本語字幕に訳してください。
+まず全体を読んで流れを理解し、各行を訳します。同じ動画の連続した場面として扱ってください。${briefingBlock}
+
+各セグメントの項目：
+- "src": 話された英語（フィラーや言い直しを含むことがある。きれいにまとめる）。
+- "secondsOnScreen": この字幕が画面に出る秒数。
+- "maxChars": その行の文字数の上限。日本語訳は必ず maxChars 以内に収める。意味を圧縮し、絶対に超えない。
+
+入力（セグメントの JSON 配列）：
+${inputJson}
+
+出力フォーマット（前置き・マークダウン禁止・JSON のみ。"en" に日本語訳を入れる）：
+{"translations":[{"index":0,"en":"…"},{"index":1,"en":"…"}]}${allHints.hintBlock}`
+      : `Translate the following Japanese shogi commentary lines into natural, native-sounding English subtitles.
 Read all lines first to understand the flow, then translate each one. Treat them as consecutive moments in the same video.${briefingBlock}
 
 Each segment has:
-- "jp": the spoken Japanese (may include fillers and stammers — clean them up).
+- "src": the spoken Japanese (may include fillers and stammers — clean them up).
 - "secondsOnScreen": how long this subtitle is on screen.
 - "maxChars": the HARD reading budget. Your English MUST fit within maxChars so a viewer can actually read it in time. Condense the meaning; never exceed it.
 
 Input (JSON array of segments):
-${JSON.stringify(
-  batch.map((b) => ({
-    index: b.index,
-    jp: b.jp,
-    secondsOnScreen: Number(Math.max(0, b.endSec - b.startSec).toFixed(1)),
-    maxChars: charBudgetFor(b.endSec - b.startSec),
-  })),
-  null,
-  2
-)}
+${inputJson}
 
 Required output format (no preamble, no markdown, JSON only):
 {"translations":[{"index":0,"en":"..."},{"index":1,"en":"..."}]}${allHints.hintBlock}`;
@@ -228,7 +349,7 @@ Required output format (no preamble, no markdown, JSON only):
     model: MODEL,
     max_tokens: 4096,
     temperature: 0,
-    system: TRANSLATE_SYSTEM,
+    system: translateSystem(direction),
     messages: [{ role: "user", content: userContent }],
   });
 
@@ -243,14 +364,28 @@ Required output format (no preamble, no markdown, JSON only):
 
 async function backTranslateBatch(
   pairs: { index: number; jp: string; en: string }[],
-  briefing: VideoBriefing | null
+  briefing: VideoBriefing | null,
+  direction: Direction
 ): Promise<{ index: number; back: string; verdict: "ok" | "warn"; note?: string }[]> {
   const anthropic = getAnthropic();
   const briefingBlock = buildBriefingBlock(briefing);
-  const userContent = `次の英訳を日本語に戻し、原文と意味が一致しているか判定してください。${briefingBlock}
+  // pairs: jp=原文（ソース言語） / en=訳文（ターゲット言語）
+  const payload = pairs.map((p) => ({ index: p.index, source: p.jp, translation: p.en }));
+  const userContent =
+    direction === "en2ja"
+      ? `各項目は source=英語の原文 / translation=日本語訳です。
+translation（日本語訳）を英語に戻し、source（元の英語）と意味が一致しているか判定してください。${briefingBlock}
 
 入力（JSON 配列）:
-${JSON.stringify(pairs, null, 2)}
+${JSON.stringify(payload, null, 2)}
+
+出力フォーマット（厳守）:
+{"checks":[{"index":0,"back":"逆翻訳した英語","verdict":"ok"},{"index":1,"back":"...","verdict":"warn","note":"段位が抜けている"}]}`
+      : `各項目は source=日本語の原文 / translation=英訳です。
+translation（英訳）を日本語に戻し、source（元の日本語）と意味が一致しているか判定してください。${briefingBlock}
+
+入力（JSON 配列）:
+${JSON.stringify(payload, null, 2)}
 
 出力フォーマット（厳守）:
 {"checks":[{"index":0,"back":"逆翻訳した日本語","verdict":"ok"},{"index":1,"back":"...","verdict":"warn","note":"段位が抜けている"}]}`;
@@ -259,7 +394,7 @@ ${JSON.stringify(pairs, null, 2)}
     model: MODEL,
     max_tokens: 3072,
     temperature: 0,
-    system: BACK_TRANSLATE_SYSTEM,
+    system: backTranslateSystem(direction),
     messages: [{ role: "user", content: userContent }],
   });
 
@@ -280,15 +415,26 @@ ${JSON.stringify(pairs, null, 2)}
 
 async function reviewBatch(
   pairs: { index: number; jp: string; en: string }[],
-  briefing: VideoBriefing | null
+  briefing: VideoBriefing | null,
+  direction: Direction
 ): Promise<{ index: number; verdict: "ok" | "warn"; note?: string }[]> {
   const anthropic = getAnthropic();
   const briefingBlock = buildBriefingBlock(briefing);
+  const payload = pairs.map((p) => ({ index: p.index, source: p.jp, translation: p.en }));
 
-  const userContent = `次の日本語→英訳ペアを校閲してください。${briefingBlock}
+  const userContent =
+    direction === "en2ja"
+      ? `次の英語→日本語訳ペアを校閲してください（source=英語の原文 / translation=日本語訳）。${briefingBlock}
 
 入力（JSON 配列）:
-${JSON.stringify(pairs, null, 2)}
+${JSON.stringify(payload, null, 2)}
+
+出力フォーマット（厳守）:
+{"reviews":[{"index":0,"verdict":"ok"},{"index":1,"verdict":"warn","note":"短い指摘文"}]}`
+      : `次の日本語→英訳ペアを校閲してください（source=日本語の原文 / translation=英訳）。${briefingBlock}
+
+入力（JSON 配列）:
+${JSON.stringify(payload, null, 2)}
 
 出力フォーマット（厳守）:
 {"reviews":[{"index":0,"verdict":"ok"},{"index":1,"verdict":"warn","note":"短い指摘文"}]}`;
@@ -297,7 +443,7 @@ ${JSON.stringify(pairs, null, 2)}
     model: MODEL,
     max_tokens: 2048,
     temperature: 0,
-    system: REVIEW_SYSTEM,
+    system: reviewSystem(direction),
     messages: [{ role: "user", content: userContent }],
   });
 
@@ -334,12 +480,32 @@ function extractJson<T>(text: string): T | null {
   }
 }
 
-function detectHitTerms(jp: string): { jp: string; en: string }[] {
-  const sorted = [...SHOGI_DICTIONARY].sort((a, b) => b.jp.length - a.jp.length);
+function detectHitTerms(
+  src: string,
+  direction: Direction
+): { jp: string; en: string }[] {
   const hits: { jp: string; en: string }[] = [];
   const seen = new Set<string>();
+  if (direction === "en2ja") {
+    // ソースは英語。英語の将棋用語を検出する。
+    const lower = src.toLowerCase();
+    const cand = [...SHOGI_DICTIONARY]
+      .map((t) => ({ t, key: t.en.replace(/\s*\(.*?\)\s*/g, " ").replace(/\s+/g, " ").trim() }))
+      .filter((c) => c.key.length >= 3)
+      .sort((a, b) => b.key.length - a.key.length);
+    for (const { t, key } of cand) {
+      const lk = key.toLowerCase();
+      const re = new RegExp(`\\b${lk.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`);
+      if (re.test(lower) && !seen.has(t.en)) {
+        hits.push({ jp: t.jp, en: t.en });
+        seen.add(t.en);
+      }
+    }
+    return hits;
+  }
+  const sorted = [...SHOGI_DICTIONARY].sort((a, b) => b.jp.length - a.jp.length);
   for (const t of sorted) {
-    if (jp.includes(t.jp) && !seen.has(t.jp)) {
+    if (src.includes(t.jp) && !seen.has(t.jp)) {
       hits.push({ jp: t.jp, en: t.en });
       seen.add(t.jp);
     }
@@ -350,9 +516,10 @@ function detectHitTerms(jp: string): { jp: string; en: string }[] {
 export async function translateAndReview(
   segments: InputSegment[],
   extraTerms: ShogiTerm[] = [],
-  briefing: VideoBriefing | null = null
+  briefing: VideoBriefing | null = null,
+  direction: Direction = "ja2en"
 ): Promise<TranslatedSegment[]> {
-  return translateAndReviewWithProgress(segments, extraTerms, briefing);
+  return translateAndReviewWithProgress(segments, extraTerms, briefing, undefined, direction);
 }
 
 /**
@@ -366,9 +533,11 @@ export async function translateAndReviewWithProgress(
   segments: InputSegment[],
   extraTerms: ShogiTerm[] = [],
   briefing: VideoBriefing | null = null,
-  onEvent?: (e: TranslateProgressEvent) => void
+  onEvent?: (e: TranslateProgressEvent) => void,
+  direction: Direction = "ja2en"
 ): Promise<TranslatedSegment[]> {
   // 学習済みユーザー辞書をマージ（同じ jp があれば extraTerms（今回確認済み）を優先）
+  // 英→日では固有名詞ステップを通らないので extraTerms は空のことが多いが、辞書は活かす。
   const userDict = await fetchUserDictionary();
   const extraJp = new Set(extraTerms.map((t) => t.jp));
   const mergedExtraTerms: ShogiTerm[] = [
@@ -376,8 +545,11 @@ export async function translateAndReviewWithProgress(
     ...userDict.filter((t) => !extraJp.has(t.jp)),
   ];
 
-  // 1. 秒読みカウントダウンを先に検出
-  const countdownMap = detectCountdownSegments(segments);
+  // 1. 秒読みカウントダウンを先に検出（日本語の「いち・に・さん」前提なので ja2en のみ）
+  const countdownMap =
+    direction === "en2ja"
+      ? new Map<number, number>()
+      : detectCountdownSegments(segments);
 
   const out: TranslatedSegment[] = segments.map((s) => {
     const cd = countdownMap.get(s.index);
@@ -399,7 +571,7 @@ export async function translateAndReviewWithProgress(
       endSec: s.endSec,
       jp: s.jp,
       en: "",
-      hitTerms: detectHitTerms(s.jp),
+      hitTerms: detectHitTerms(s.jp, direction),
       kind: "normal" as const,
     };
   });
@@ -416,7 +588,7 @@ export async function translateAndReviewWithProgress(
     total: translateBatches.length,
   });
   await runWithConcurrency(translateBatches, PARALLEL_LIMIT, async (batch) => {
-    const result = await translateBatch(batch, mergedExtraTerms, briefing);
+    const result = await translateBatch(batch, mergedExtraTerms, briefing, direction);
     for (const r of result) {
       const target = out.find((s) => s.index === r.index);
       if (target) target.en = r.en;
@@ -460,7 +632,7 @@ export async function translateAndReviewWithProgress(
         jp: s.jp,
         en: s.en,
       }));
-      const reviews = await reviewBatch(pairs, briefing);
+      const reviews = await reviewBatch(pairs, briefing, direction);
       for (const r of reviews) {
         if (r.verdict === "warn") {
           const target = out.find((s) => s.index === r.index);
@@ -486,7 +658,7 @@ export async function translateAndReviewWithProgress(
         jp: s.jp,
         en: s.en,
       }));
-      const checks = await backTranslateBatch(pairs, briefing);
+      const checks = await backTranslateBatch(pairs, briefing, direction);
       for (const c of checks) {
         const target = out.find((s) => s.index === c.index);
         if (!target) continue;
@@ -510,7 +682,10 @@ export async function translateAndReviewWithProgress(
 
   await Promise.all([reviewTask, backTask]);
 
-  const finalSegments = resegmentForReadability(out);
+  // 再分割は英語の文区切り（. ! ? と小文字つなぎ）前提なので ja2en のみ。
+  // 日本語ターゲット（en2ja）はそのまま返す。
+  const finalSegments =
+    direction === "en2ja" ? out.map((s, i) => ({ ...s, index: i })) : resegmentForReadability(out);
   onEvent?.({ type: "done", segments: finalSegments });
   return finalSegments;
 }

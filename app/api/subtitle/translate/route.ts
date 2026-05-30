@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import { translateAndReview } from "@/lib/video/translate";
+import { translateAndReview, type Direction } from "@/lib/video/translate";
 import type { ShogiTerm } from "@/lib/shogi-dictionary";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
 /**
- * 文字起こし結果のセグメント配列を受け取り、Claude Sonnet 4.6 で英訳 + 二重チェックする。
+ * 文字起こし結果のセグメント配列を受け取り、Claude Sonnet 4.6 で翻訳 + 二重チェックする。
+ * direction（ja2en=日本語→英語 / en2ja=英語→日本語）で向きを切り替える。既定は ja2en。
  * リクエスト/レスポンスは JSON のみ。ファイルシステム不使用なので Vercel Serverless で動く。
  */
 export async function POST(req: NextRequest) {
@@ -19,6 +20,7 @@ export async function POST(req: NextRequest) {
         jp: string;
       }>;
       extraTerms?: ShogiTerm[];
+      direction?: Direction;
     };
     if (!Array.isArray(body.segments)) {
       return NextResponse.json(
@@ -26,9 +28,12 @@ export async function POST(req: NextRequest) {
         { status: 400 }
       );
     }
+    const direction: Direction = body.direction === "en2ja" ? "en2ja" : "ja2en";
     const translated = await translateAndReview(
       body.segments,
-      body.extraTerms ?? []
+      body.extraTerms ?? [],
+      null,
+      direction
     );
     return NextResponse.json({ segments: translated });
   } catch (err) {

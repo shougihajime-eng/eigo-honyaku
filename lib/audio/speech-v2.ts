@@ -10,6 +10,9 @@
 
 import { SHOGI_DICTIONARY } from "@/lib/shogi-dictionary";
 
+/** 書き起こす音声の言語。ja=日本語動画 / en=英語動画 */
+export type SpeechLang = "ja" | "en";
+
 export type Segment = {
   index: number;
   startSec: number;
@@ -107,10 +110,32 @@ function parseDuration(s: string | undefined): number {
 
 const SYNC_LIMIT_BYTES = 9 * 1024 * 1024; // Speech v2 同期 API は ~10MB 上限
 
+/** 認識を後押しする将棋用語フレーズ（言語ごとに表記を変える） */
+function buildSpeechPhrases(lang: SpeechLang): { value: string; boost: number }[] {
+  if (lang === "en") {
+    // 英語音声では英語の将棋用語を後押し（括弧書きは除く）
+    const seen = new Set<string>();
+    const phrases: { value: string; boost: number }[] = [];
+    for (const t of SHOGI_DICTIONARY) {
+      const v = t.en.replace(/\s*\(.*?\)\s*/g, " ").replace(/\s+/g, " ").trim();
+      if (v.length >= 3 && !seen.has(v)) {
+        seen.add(v);
+        phrases.push({ value: v, boost: 12 });
+      }
+    }
+    return phrases;
+  }
+  return SHOGI_DICTIONARY.map((t) => ({ value: t.jp, boost: 15 }));
+}
+
 /**
  * 音声 Buffer を Speech v2 同期 API に送って文字起こしする
+ * lang="ja"（日本語動画）/ "en"（英語動画）で認識言語を切り替える
  */
-export async function transcribeAudioBuffer(audioBuf: Buffer): Promise<Segment[]> {
+export async function transcribeAudioBuffer(
+  audioBuf: Buffer,
+  lang: SpeechLang = "ja"
+): Promise<Segment[]> {
   if (audioBuf.length > SYNC_LIMIT_BYTES) {
     throw new Error(
       `音声が大きすぎます（${Math.round(audioBuf.length / 1024 / 1024)}MB / 上限約9MB）。動画を短くするか、低ビットレートで再エンコードしてください。`
@@ -118,12 +143,13 @@ export async function transcribeAudioBuffer(audioBuf: Buffer): Promise<Segment[]
   }
 
   const { token, projectId } = await getAccessToken();
-  const phrases = SHOGI_DICTIONARY.map((t) => ({ value: t.jp, boost: 15 }));
+  const phrases = buildSpeechPhrases(lang);
+  const languageCodes = lang === "en" ? ["en-US"] : ["ja-JP"];
 
   const body = {
     config: {
       autoDecodingConfig: {},
-      languageCodes: ["ja-JP"],
+      languageCodes,
       model: "latest_long",
       features: {
         enableWordTimeOffsets: true,

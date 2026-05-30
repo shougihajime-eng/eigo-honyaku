@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import { transcribeAudioBuffer } from "@/lib/audio/speech-v2";
+import { transcribeAudioBuffer, type SpeechLang } from "@/lib/audio/speech-v2";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
 /**
  * 音声バイナリ（multipart/form-data の "audio" フィールド）を受け取り、
- * Google Speech-to-Text v2 で日本語に文字起こしする。
+ * Google Speech-to-Text v2 で文字起こしする。
+ * "lang" フィールド（ja / en）で認識言語を切り替える。既定は ja。
  * 結果は { segments: [...] } で返す。
  */
 export async function POST(req: NextRequest) {
@@ -20,9 +21,12 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const langRaw = (form.get("lang") ?? "ja").toString();
+    const lang: SpeechLang = langRaw === "en" ? "en" : "ja";
+
     const arrayBuf = await file.arrayBuffer();
     const buf = Buffer.from(arrayBuf);
-    const segments = await transcribeAudioBuffer(buf);
+    const segments = await transcribeAudioBuffer(buf, lang);
 
     return NextResponse.json({ segments });
   } catch (err) {
