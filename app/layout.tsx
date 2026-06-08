@@ -11,6 +11,23 @@ const inter = Inter({
 export const metadata: Metadata = {
   title: "Eigo — 将棋YouTubeを世界へ",
   description: "AIで日本語動画を、海外視聴者に届く美しい英語字幕に。",
+  applicationName: "英語翻訳",
+  icons: {
+    icon: "/icon.svg",
+    apple: "/icon.svg",
+  },
+  // iPhone/iPad で「ホーム画面に追加」したとき、本物のアプリのように全画面で開く
+  appleWebApp: {
+    capable: true,
+    title: "英語翻訳",
+    statusBarStyle: "default",
+  },
+  openGraph: {
+    title: "Eigo — 将棋YouTubeを世界へ",
+    description: "AIで日本語動画を、海外視聴者に届く美しい英語字幕に。",
+    type: "website",
+    locale: "ja_JP",
+  },
 };
 
 export const viewport: Viewport = {
