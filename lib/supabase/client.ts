@@ -9,6 +9,22 @@ import { createClient } from "@supabase/supabase-js";
  */
 const SCHEMA = "eigo_honyaku";
 
+/**
+ * Supabase が一瞬混んだときに 1 クエリが 15〜30 秒固まり、
+ * 画面が無限ローディングになるのを防ぐため、8 秒で見切る fetch。
+ */
+function timeoutFetch(timeoutMs = 8000): typeof fetch {
+  return async (input, init) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(input as RequestInfo, { ...init, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type SB = any;
 let cached: SB | null = null;
@@ -21,6 +37,9 @@ export function getSupabase(): SB | null {
     // 環境変数が無いときは null を返し、辞書学習は単に無効化する（致命エラーにしない）
     return null;
   }
-  cached = createClient(url, anonKey, { db: { schema: SCHEMA } });
+  cached = createClient(url, anonKey, {
+    db: { schema: SCHEMA },
+    global: { fetch: timeoutFetch(8000) },
+  });
   return cached;
 }
